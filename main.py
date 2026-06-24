@@ -5,7 +5,12 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT")
 CHAT_ID = int(os.getenv("TELEGRAM_CHAT", "0"))
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0")) or CHAT_ID # set ADMIN_ID in Railway, or it uses your CHAT_ID
 DATA_FILE = "/tmp/pairs.json"
+USERS_FILE = "/tmp/users.json"
+
+def load_json(path, default): return json.load(open(path)) if os.path.exists(path) else default
+def save_json(path, data): json.dump(data, open(path, "w"))
 
 def load_pairs():
     if os.path.exists(DATA_FILE):
@@ -26,10 +31,14 @@ def load_pairs():
         "XAEUR": {"yf": "XAUEUR=X", "corr": "XAUUSD=X"},
     }
 
-def save_pairs(pairs): json.dump(pairs, open(DATA_FILE, "w"))
+def save_pairs(pairs): save_json(DATA_FILE, pairs)
 PAIRS = load_pairs()
+USERS = load_json(USERS_FILE, [ADMIN_ID])
 last_signals = {}
 user_state = {}
+
+def is_admin(uid): return uid == ADMIN_ID
+def is_allowed(uid): return uid in USERS
 
 # === FIXED DATA FETCHER ===
 def get_data(symbol, interval, period="7d"):
@@ -70,62 +79,57 @@ async def scanner(app):
     while True:
         for n,c in PAIRS.items():
             msg = check_pair(n,c)
-            if msg and CHAT_ID:
-                try: await app.bot.send_message(CHAT_ID, msg)
-                except: pass
+            if msg:
+                for uid in USERS: # send to ALL allowed users, not just CHAT_ID
+                    try: await app.bot.send_message(uid, msg)
+                    except: pass
         await asyncio.sleep(60)
 
-# === BOTTOM KEYBOARD (not in chat) ===
-def main_menu():
-    return ReplyKeyboardMarkup(
-        [["➕ Add Pair", "📋 My Pairs"],
-         ["❌ Remove", "⬅ Back"]],
-        resize_keyboard=True
-    )
+# === BOTTOM KEYBOARD ===
+def main_menu(uid):
+    base = [["➕ Add Pair", "📋 My Pairs"], ["❌ Remove", "⬅ Back"]]
+    if is_admin(uid): base.append(["👑 Admin"])
+    return ReplyKeyboardMarkup(base, resize_keyboard=True)
 
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ Qumbul is ALIVE bro!", reply_markup=main_menu())
+    uid = update.effective_user.id
+    if not is_allowed(uid):
+        await update.message.reply_text(f"⛔ Not authorized\nYour ID: {uid}\nAsk admin to add you.")
+        return
+    await update.message.reply_text("✅ Qumbul is ALIVE bro!", reply_markup=main_menu(uid))
+
+async def id_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"Your ID: {update.effective_user.id}")
 
 async def text_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.message.from_user.id
+    if not is_allowed(uid): return
     txt = update.message.text.strip()
     state = user_state.get(uid)
 
-    # button presses
-    if txt == "➕ Add Pair":
-        user_state[uid] = "adding"
-        await update.message.reply_text("Send pair like: XAUUSD=X", reply_markup=main_menu())
-        return
-    if txt == "📋 My Pairs":
-        pairs = "\n".join([f"{k} → {v['yf']}" for k,v in PAIRS.items()])
-        await update.message.reply_text(f"Your pairs:\n{pairs}", reply_markup=main_menu())
-        return
-    if txt == "❌ Remove":
-        user_state[uid] = "removing"
-        await update.message.reply_text("Send the NAME to remove (e.g. XAUUSD)", reply_markup=main_menu())
-        return
-    if txt == "⬅ Back":
-        await update.message.reply_text("Back to menu", reply_markup=main_menu())
-        return
+    # ADMIN PANEL
+    if txt == "👑 Admin" and is_admin(uid):
+        await update.message.reply_text("Admin Panel:", reply_markup=ReplyKeyboardMarkup([["Add User","Remove User"],["List Users","⬅ Back"]], resize_keyboard=True)); return
+    if txt == "Add User" and is_admin(uid): user_state[uid]="add_user"; await update.message.reply_text("Send Telegram ID to add:"); return
+    if txt == "Remove User" and is_admin(uid): user_state[uid]="del_user"; await update.message.reply_text("Send Telegram ID to remove:"); return
+    if txt == "List Users" and is_admin(uid): await update.message.reply_text("Users:\n" + "\n".join(map(str, USERS)), reply_markup=main_menu(uid)); return
+    if state == "add_user": USERS.append(int(txt)); save_json(USERS_FILE, list(set(USERS))); user_state[uid]=None; await update.message.reply_text("✅ User added", reply_markup=main_menu(uid)); return
+    if state == "del_user": USERS.remove(int(txt)) if int(txt) in USERS else None; save_json(USERS_FILE, USERS); user_state[uid]=None; await update.message.reply_text("✅ User removed", reply_markup=main_menu(uid)); return
 
-    # states
-    if state == "adding":
-        sym = txt.upper()
-        name = sym.split("=")[0].split("-")[0]
-        PAIRS[name] = {"yf": sym, "corr": ""}
-        save_pairs(PAIRS); user_state[uid] = None
-        await update.message.reply_text(f"✅ Added {sym}", reply_markup=main_menu())
-    elif state == "removing":
-        PAIRS.pop(txt.upper(), None); save_pairs(PAIRS); user_state[uid] = None
-        await update.message.reply_text("✅ Removed", reply_markup=main_menu())
+    # NORMAL BUTTONS
+    if txt == "➕ Add Pair": user_state[uid]="adding"; await update.message.reply_text("Send pair like: XAUUSD=X", reply_markup=main_menu(uid)); return
+    if txt == "📋 My Pairs": pairs = "\n".join([f"{k} → {v['yf']}" for k,v in PAIRS.items()]); await update.message.reply_text(f"Your pairs:\n{pairs}", reply_markup=main_menu(uid)); return
+    if txt == "❌ Remove": user_state[uid]="removing"; await update.message.reply_text("Send NAME to remove (e.g. XAUUSD)", reply_markup=main_menu(uid)); return
+    if txt == "⬅ Back": await update.message.reply_text("Back", reply_markup=main_menu(uid)); return
+
+    if state == "adding": sym=txt.upper(); name=sym.split("=")[0].split("-")[0]; PAIRS[name]={"yf":sym,"corr":""}; save_pairs(PAIRS); user_state[uid]=None; await update.message.reply_text(f"✅ Added {sym}", reply_markup=main_menu(uid))
+    elif state == "removing": PAIRS.pop(txt.upper(),None); save_pairs(PAIRS); user_state[uid]=None; await update.message.reply_text("✅ Removed", reply_markup=main_menu(uid))
 
 if __name__ == "__main__":
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("id", id_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
-
-    # scanner in background
     threading.Thread(target=lambda: asyncio.run(scanner(app)), daemon=True).start()
-
     print("Bot started")
     app.run_polling()
