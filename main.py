@@ -1,7 +1,7 @@
-import os, json, asyncio, yfinance as yf, pandas as pd, threading
+import os, json, asyncio, yfinance as yf, threading
 from datetime import datetime, timezone
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, ReplyKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT")
 CHAT_ID = int(os.getenv("TELEGRAM_CHAT", "0"))
@@ -31,7 +31,7 @@ PAIRS = load_pairs()
 last_signals = {}
 user_state = {}
 
-# === FIXED DATA FETCHER (bypasses Yahoo block) ===
+# === FIXED DATA FETCHER ===
 def get_data(symbol, interval, period="7d"):
     try:
         from curl_cffi import requests as creq
@@ -75,49 +75,56 @@ async def scanner(app):
                 except: pass
         await asyncio.sleep(60)
 
+# === BOTTOM KEYBOARD (not in chat) ===
 def main_menu():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕ Add Pair", callback_data="add"), InlineKeyboardButton("📋 My Pairs", callback_data="list")],
-        [InlineKeyboardButton("❌ Remove", callback_data="remove"), InlineKeyboardButton("⬅️ Back", callback_data="main")]
-    ])
+    return ReplyKeyboardMarkup(
+        [["➕ Add Pair", "📋 My Pairs"],
+         ["❌ Remove", "⬅ Back"]],
+        resize_keyboard=True
+    )
 
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ Qumbul is ALIVE bro!", reply_markup=main_menu())
 
-async def button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
-    uid = q.from_user.id
-    if q.data == "main":
-        await q.edit_message_text("Qumbul Scanner v6", reply_markup=main_menu())
-    elif q.data == "add":
-        user_state[uid] = "adding"
-        await q.edit_message_text("Send pair like: XAUUSD=X", reply_markup=main_menu())
-    elif q.data == "list":
-        txt = "\n".join([f"{k} → {v['yf']}" for k,v in PAIRS.items()]) or "Empty"
-        await q.edit_message_text(f"Your pairs:\n{txt}", reply_markup=main_menu())
-    elif q.data == "remove":
-        buttons = [[InlineKeyboardButton(k, callback_data=f"del_{k}")] for k in list(PAIRS)[:10]]
-        buttons.append([InlineKeyboardButton("⬅️ Back", callback_data="main")])
-        await q.edit_message_text("Tap to remove:", reply_markup=InlineKeyboardMarkup(buttons))
-    elif q.data.startswith("del_"):
-        PAIRS.pop(q.data[4:], None); save_pairs(PAIRS)
-        await q.edit_message_text("✅ Removed", reply_markup=main_menu())
-
 async def text_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.message.from_user.id
-    if user_state.get(uid) == "adding":
-        sym = update.message.text.upper().strip()
-        PAIRS[sym.split("=")[0]] = {"yf": sym, "corr": ""}
+    txt = update.message.text.strip()
+    state = user_state.get(uid)
+
+    # button presses
+    if txt == "➕ Add Pair":
+        user_state[uid] = "adding"
+        await update.message.reply_text("Send pair like: XAUUSD=X", reply_markup=main_menu())
+        return
+    if txt == "📋 My Pairs":
+        pairs = "\n".join([f"{k} → {v['yf']}" for k,v in PAIRS.items()])
+        await update.message.reply_text(f"Your pairs:\n{pairs}", reply_markup=main_menu())
+        return
+    if txt == "❌ Remove":
+        user_state[uid] = "removing"
+        await update.message.reply_text("Send the NAME to remove (e.g. XAUUSD)", reply_markup=main_menu())
+        return
+    if txt == "⬅ Back":
+        await update.message.reply_text("Back to menu", reply_markup=main_menu())
+        return
+
+    # states
+    if state == "adding":
+        sym = txt.upper()
+        name = sym.split("=")[0].split("-")[0]
+        PAIRS[name] = {"yf": sym, "corr": ""}
         save_pairs(PAIRS); user_state[uid] = None
-        await update.message.reply_text(f"✅ Added {sym}\nWriting added.", reply_markup=main_menu())
+        await update.message.reply_text(f"✅ Added {sym}", reply_markup=main_menu())
+    elif state == "removing":
+        PAIRS.pop(txt.upper(), None); save_pairs(PAIRS); user_state[uid] = None
+        await update.message.reply_text("✅ Removed", reply_markup=main_menu())
 
 if __name__ == "__main__":
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
-    # start scanner in background thread (fixes Railway loop error)
+    # scanner in background
     threading.Thread(target=lambda: asyncio.run(scanner(app)), daemon=True).start()
 
     print("Bot started")
