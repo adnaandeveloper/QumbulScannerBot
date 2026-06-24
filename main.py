@@ -7,7 +7,7 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT")
 CHAT_ID = int(os.getenv("TELEGRAM_CHAT", "0"))
 DATA_FILE = "/tmp/pairs.json"
 
-# Load saved pairs or use defaults
+# === LOAD PAIRS ===
 def load_pairs():
     if os.path.exists(DATA_FILE):
         return json.load(open(DATA_FILE))
@@ -34,12 +34,17 @@ PAIRS = load_pairs()
 last_signals = {}
 user_state = {}
 
-# === SCANNER LOGIC (same as before) ===
+# === FIXED DATA FETCHER (bypasses Yahoo block) ===
 def get_data(symbol, interval, period="7d"):
     try:
-        df = yf.download(symbol, interval=interval, period=period, progress=False, prepost=True)
+        from curl_cffi import requests as creq
+        session = creq.Session(impersonate="chrome110")
+        df = yf.download(symbol, interval=interval, period=period,
+                         progress=False, session=session, threads=False, prepost=True)
         return df.dropna() if not df.empty else None
-    except: return None
+    except Exception as e:
+        print(f"download fail {symbol}: {e}")
+        return None
 
 def bias_htf(df):
     if df is None or len(df) < 2: return 0
@@ -53,7 +58,8 @@ def cisd(df):
 def check_pair(name, cfg):
     sym = cfg["yf"]
     h4 = get_data(sym, "60m", "30d")
-    if h4 is not None: h4 = h4.resample('4h').agg({'Open':'first','High':'max','Low':'min','Close':'last'}).dropna()
+    if h4 is not None:
+        h4 = h4.resample('4h').agg({'Open':'first','High':'max','Low':'min','Close':'last'}).dropna()
     h1 = get_data(sym, "60m", "7d")
     m15 = get_data(sym, "15m", "2d")
     m5 = get_data(sym, "5m", "2d")
@@ -73,53 +79,52 @@ def check_pair(name, cfg):
 
 async def scanner(app):
     while True:
-        for n,c in PAIRS.items():
+        for n,c in list(PAIRS.items()):
             msg = check_pair(n,c)
-            if msg and CHAT_ID: await app.bot.send_message(CHAT_ID, msg)
-        await asyncio.sleep(60)
+            if msg and CHAT_ID:
+                try: await app.bot.send_message(CHAT_ID, msg)
+                except: pass
+        await asyncio.sleep(90) # slowed to avoid rate limit
 
 # === BUTTONS ===
 def main_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("➕ Add Pair", callback_data="add"), InlineKeyboardButton("📋 My Pairs", callback_data="list")],
-        [InlineKeyboardButton("❌ Remove", callback_data="remove"), InlineKeyboardButton("⏸️ Pause", callback_data="pause")]
+        [InlineKeyboardButton("❌ Remove", callback_data="remove"), InlineKeyboardButton("⬅️ Back", callback_data="main")]
     ])
 
 def back_btn():
     return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="main")]])
 
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Qumbul Scanner v6\nChoose:", reply_markup=main_menu())
+    await update.message.reply_text("✅ Qumbul Scanner v6 is LIVE\nChoose:", reply_markup=main_menu())
 
 async def button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     uid = q.from_user.id
 
     if q.data == "main":
-        await q.edit_message_text("Qumbul Scanner v6\nChoose:", reply_markup=main_menu())
-
+        await q.edit_message_text("✅ Qumbul Scanner v6 is LIVE\nChoose:", reply_markup=main_menu())
     elif q.data == "add":
         user_state[uid] = "adding"
-        await q.edit_message_text("Send pair like: XAUUSD=X", reply_markup=back_btn())
-
+        await q.edit_message_text("Send pair like: XAUUSD=X or BTC-USD", reply_markup=back_btn())
     elif q.data == "list":
         txt = "\n".join([f"{k} → {v['yf']}" for k,v in PAIRS.items()]) or "Empty"
         await q.edit_message_text(f"Your pairs:\n{txt}", reply_markup=back_btn())
-
     elif q.data == "remove":
         buttons = [[InlineKeyboardButton(k, callback_data=f"del_{k}")] for k in PAIRS.keys()]
         buttons.append([InlineKeyboardButton("⬅️ Back", callback_data="main")])
         await q.edit_message_text("Tap to remove:", reply_markup=InlineKeyboardMarkup(buttons))
-
     elif q.data.startswith("del_"):
         PAIRS.pop(q.data[4:], None); save_pairs(PAIRS)
-        await q.edit_message_text("✅ Removed", reply_markup=back_btn())
+        await q.edit_message_text("✅ Removed — Writing deleted.", reply_markup=back_btn())
 
 async def text_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.message.from_user.id
     if user_state.get(uid) == "adding":
         sym = update.message.text.upper().strip()
-        PAIRS[sym.split("=")[0]] = {"yf": sym, "corr": ""}
+        name = sym.split("=")[0].split("-")[0]
+        PAIRS[name] = {"yf": sym, "corr": ""}
         save_pairs(PAIRS); user_state[uid] = None
         await update.message.reply_text(f"✅ Added {sym}\nWriting added.", reply_markup=back_btn())
 
@@ -129,6 +134,7 @@ async def main():
     app.add_handler(CallbackQueryHandler(button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     asyncio.create_task(scanner(app))
+    print("Bot started")
     await app.run_polling()
 
 if __name__ == "__main__":
