@@ -16,7 +16,7 @@ def load_pairs():
     if os.path.exists(DATA_FILE):
         return json.load(open(DATA_FILE))
     return {
-        "XAUUSD": {"yf": "GC=F", "corr": "SI=F"},
+        "XAUUSD": {"yf": "XAUUSD=X", "corr": "XAGUSD=X"},
         "NAS100": {"yf": "NQ=F", "corr": "ES=F"},
         "SPX500": {"yf": "ES=F", "corr": "NQ=F"},
         "GBPUSD": {"yf": "GBPUSD=X", "corr": "EURUSD=X"},
@@ -28,7 +28,7 @@ def load_pairs():
         "EURJPY": {"yf": "EURJPY=X", "corr": "USDJPY=X"},
         "USDJPY": {"yf": "USDJPY=X", "corr": "EURJPY=X"},
         "AUDJPY": {"yf": "AUDJPY=X", "corr": "USDJPY=X"},
-        "XAEUR": {"yf": "EURUSD=X", "corr": "GBPUSD=X"},
+        "XAEUR": {"yf": "XAUEUR=X", "corr": "XAUUSD=X"},
     }
 
 def save_pairs(pairs): save_json(DATA_FILE, pairs)
@@ -40,10 +40,12 @@ user_state = {}
 def is_admin(uid): return uid == ADMIN_ID
 def is_allowed(uid): return uid in USERS
 
-# === CLEAN DATA FETCHER - NO CURL_CFFI ===
+# === WORKING DATA FETCHER ===
 def get_data(symbol, interval, period="7d"):
     try:
-        df = yf.download(symbol, interval=interval, period=period, progress=False, threads=False, auto_adjust=False)
+        from curl_cffi import requests as creq
+        session = creq.Session(impersonate="chrome120")
+        df = yf.download(symbol, interval=interval, period=period, progress=False, session=session, threads=False, auto_adjust=False, prepost=True)
         return df.dropna() if df is not None and not df.empty else None
     except Exception as e:
         print(f"DL ERR {symbol}: {e}")
@@ -66,10 +68,7 @@ def is_crossover(df, direction="buy"):
     curr_lowest = df['Low'].iloc[-6:-1].min()
     prev_close = df['Close'].iloc[-2]
     curr_close = df['Close'].iloc[-1]
-    if direction == "buy":
-        return prev_close <= prev_highest and curr_close > curr_highest
-    else:
-        return prev_close >= prev_lowest and curr_close < curr_lowest
+    return (prev_close <= prev_highest and curr_close > curr_highest) if direction=="buy" else (prev_close >= prev_lowest and curr_close < curr_lowest)
 
 def check_pair(name, cfg):
     sym = cfg["yf"]
@@ -107,32 +106,28 @@ def main_menu(uid):
 
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    if not is_allowed(uid):
-        await update.message.reply_text(f"⛔ Not authorized\nYour ID: {uid}\nAsk admin to add you.")
-        return
+    if not is_allowed(uid): await update.message.reply_text(f"⛔ Not authorized\nYour ID: {uid}"); return
     await update.message.reply_text("✅ Qumbul is ALIVE bro!", reply_markup=main_menu(uid))
 
-async def id_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"Your ID: {update.effective_user.id}")
+async def id_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE): await update.message.reply_text(f"Your ID: {update.effective_user.id}")
 
 async def text_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.message.from_user.id
     if not is_allowed(uid): return
     txt = update.message.text.strip()
     state = user_state.get(uid)
-    if txt == "👑 Admin" and is_admin(uid):
-        await update.message.reply_text("Admin Panel:", reply_markup=ReplyKeyboardMarkup([["Add User","Remove User"],["List Users","⬅ Back"]], resize_keyboard=True)); return
-    if txt == "Add User" and is_admin(uid): user_state[uid]="add_user"; await update.message.reply_text("Send Telegram ID to add:"); return
-    if txt == "Remove User" and is_admin(uid): user_state[uid]="del_user"; await update.message.reply_text("Send Telegram ID to remove:"); return
-    if txt == "List Users" and is_admin(uid): await update.message.reply_text("Users:\n" + "\n".join(map(str, USERS)), reply_markup=main_menu(uid)); return
-    if state == "add_user": USERS.append(int(txt)); save_json(USERS_FILE, list(set(USERS))); user_state[uid]=None; await update.message.reply_text("✅ User added", reply_markup=main_menu(uid)); return
-    if state == "del_user": USERS.remove(int(txt)) if int(txt) in USERS else None; save_json(USERS_FILE, USERS); user_state[uid]=None; await update.message.reply_text("✅ User removed", reply_markup=main_menu(uid)); return
-    if txt == "➕ Add Pair": user_state[uid]="adding"; await update.message.reply_text("Send pair like: XAUUSD=X", reply_markup=main_menu(uid)); return
-    if txt == "📋 My Pairs": pairs = "\n".join([f"{k} → {v['yf']}" for k,v in PAIRS.items()]); await update.message.reply_text(f"Your pairs:\n{pairs}", reply_markup=main_menu(uid)); return
-    if txt == "❌ Remove": user_state[uid]="removing"; await update.message.reply_text("Send NAME to remove (e.g. XAUUSD)", reply_markup=main_menu(uid)); return
-    if txt == "⬅ Back": await update.message.reply_text("Back", reply_markup=main_menu(uid)); return
-    if state == "adding": sym=txt.upper(); name=sym.split("=")[0].split("-")[0]; PAIRS[name]={"yf":sym,"corr":""}; save_pairs(PAIRS); user_state[uid]=None; await update.message.reply_text(f"✅ Added {sym}", reply_markup=main_menu(uid))
-    elif state == "removing": PAIRS.pop(txt.upper(),None); save_pairs(PAIRS); user_state[uid]=None; await update.message.reply_text("✅ Removed", reply_markup=main_menu(uid))
+    if txt == "👑 Admin" and is_admin(uid): await update.message.reply_text("Admin Panel:", reply_markup=ReplyKeyboardMarkup([["Add User","Remove User"],["List Users","⬅ Back"]], resize_keyboard=True)); return
+    if txt == "Add User" and is_admin(uid): user_state[uid]="add_user"; await update.message.reply_text("Send Telegram ID:"); return
+    if txt == "Remove User" and is_admin(uid): user_state[uid]="del_user"; await update.message.reply_text("Send Telegram ID:"); return
+    if txt == "List Users" and is_admin(uid): await update.message.reply_text("Users:\n"+"\n".join(map(str,USERS)), reply_markup=main_menu(uid)); return
+    if state=="add_user": USERS.append(int(txt)); save_json(USERS_FILE,list(set(USERS))); user_state[uid]=None; await update.message.reply_text("✅ Added", reply_markup=main_menu(uid)); return
+    if state=="del_user": USERS.remove(int(txt)) if int(txt) in USERS else None; save_json(USERS_FILE,USERS); user_state[uid]=None; await update.message.reply_text("✅ Removed", reply_markup=main_menu(uid)); return
+    if txt=="➕ Add Pair": user_state[uid]="adding"; await update.message.reply_text("Send pair like: XAUUSD=X", reply_markup=main_menu(uid)); return
+    if txt=="📋 My Pairs": await update.message.reply_text("Pairs:\n"+"\n".join([f"{k}→{v['yf']}" for k,v in PAIRS.items()]), reply_markup=main_menu(uid)); return
+    if txt=="❌ Remove": user_state[uid]="removing"; await update.message.reply_text("Send NAME:", reply_markup=main_menu(uid)); return
+    if txt=="⬅ Back": await update.message.reply_text("Back", reply_markup=main_menu(uid)); return
+    if state=="adding": sym=txt.upper(); name=sym.split("=")[0].split("-")[0]; PAIRS[name]={"yf":sym,"corr":""}; save_pairs(PAIRS); user_state[uid]=None; await update.message.reply_text(f"✅ {sym}", reply_markup=main_menu(uid))
+    elif state=="removing": PAIRS.pop(txt.upper(),None); save_pairs(PAIRS); user_state[uid]=None; await update.message.reply_text("✅ Removed", reply_markup=main_menu(uid))
 
 if __name__ == "__main__":
     app = Application.builder().token(BOT_TOKEN).build()
