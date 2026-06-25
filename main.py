@@ -16,7 +16,7 @@ def load_pairs():
     if os.path.exists(DATA_FILE):
         return json.load(open(DATA_FILE))
     return {
-        "XAUUSD": {"yf": "XAUUSD=X", "corr": "XAGUSD=X"},
+        "XAUUSD": {"yf": "GC=F", "corr": "SI=F"},
         "NAS100": {"yf": "NQ=F", "corr": "ES=F"},
         "SPX500": {"yf": "ES=F", "corr": "NQ=F"},
         "GBPUSD": {"yf": "GBPUSD=X", "corr": "EURUSD=X"},
@@ -28,7 +28,7 @@ def load_pairs():
         "EURJPY": {"yf": "EURJPY=X", "corr": "USDJPY=X"},
         "USDJPY": {"yf": "USDJPY=X", "corr": "EURJPY=X"},
         "AUDJPY": {"yf": "AUDJPY=X", "corr": "USDJPY=X"},
-        "XAEUR": {"yf": "XAUEUR=X", "corr": "XAUUSD=X"},
+        "XAEUR": {"yf": "EURUSD=X", "corr": "GBPUSD=X"},
     }
 
 def save_pairs(pairs): save_json(DATA_FILE, pairs)
@@ -40,23 +40,13 @@ user_state = {}
 def is_admin(uid): return uid == ADMIN_ID
 def is_allowed(uid): return uid in USERS
 
-# === CLEAN DATA FETCHER - NO curl_cffi ===
+# === CLEAN DATA FETCHER - NO CURL_CFFI ===
 def get_data(symbol, interval, period="7d"):
     try:
-        df = yf.download(
-            symbol,
-            interval=interval,
-            period=period,
-            progress=False,
-            threads=False,
-            auto_adjust=False,
-            prepost=True
-        )
-        if df is None or df.empty:
-            return None
-        return df.dropna()
+        df = yf.download(symbol, interval=interval, period=period, progress=False, threads=False, auto_adjust=False)
+        return df.dropna() if df is not None and not df.empty else None
     except Exception as e:
-        print(f"Error {symbol}: {e}")
+        print(f"DL ERR {symbol}: {e}")
         return None
 
 def bias_htf(df):
