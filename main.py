@@ -54,10 +54,24 @@ def bias_htf(df):
     if df is None or len(df) < 2: return 0
     return 1 if df['Close'].iloc[-1] > df['High'].iloc[-2] else -1 if df['Close'].iloc[-1] < df['Low'].iloc[-2] else 0
 
-def cisd(df):
+# === NEW: exact TV logic ===
+def cisd_state(df):
     if df is None or len(df) < 6: return "—"
     h, l, c = df['High'].iloc[-6:-1].max(), df['Low'].iloc[-6:-1].min(), df['Close'].iloc[-1]
     return "BUY ✓" if c > h else "SELL ✓" if c < l else "—"
+
+def is_crossover(df, direction="buy"):
+    if df is None or len(df) < 7: return False
+    prev_highest = df['High'].iloc[-7:-2].max()
+    curr_highest = df['High'].iloc[-6:-1].max()
+    prev_lowest = df['Low'].iloc[-7:-2].min()
+    curr_lowest = df['Low'].iloc[-6:-1].min()
+    prev_close = df['Close'].iloc[-2]
+    curr_close = df['Close'].iloc[-1]
+    if direction == "buy":
+        return prev_close <= prev_highest and curr_close > curr_highest
+    else:
+        return prev_close >= prev_lowest and curr_close < curr_lowest
 
 def check_pair(name, cfg):
     sym = cfg["yf"]
@@ -67,10 +81,17 @@ def check_pair(name, cfg):
     m15 = get_data(sym, "15m", "2d")
     m5 = get_data(sym, "5m", "2d")
     b4, b1 = bias_htf(h4), bias_htf(h1)
-    s15, s5 = cisd(m15), cisd(m5)
+    s15, s5 = cisd_state(m15), cisd_state(m5)
+
+    buy_cross = is_crossover(m5, "buy")
+    sell_cross = is_crossover(m5, "sell")
+
+    # DEBUG - watch Railway logs
+    print(f"{name} | 4H:{b4} 1H:{b1} buyX:{buy_cross} sellX:{sell_cross}")
+
     sig = None
-    if b1 == 1 and b1 == b4 and s5 == "BUY ✓": sig = "FRACTAL BUY"
-    if b1 == -1 and b1 == b4 and s5 == "SELL ✓": sig = "FRACTAL SELL"
+    if b1 == 1 and b1 == b4 and buy_cross: sig = "FRACTAL BUY"
+    if b1 == -1 and b1 == b4 and sell_cross: sig = "FRACTAL SELL"
     if not sig or last_signals.get(name) == sig: return None
     last_signals[name] = sig
     return f"🚨 {name}\n{sig}\n\n4H: {'BUY ✓' if b4==1 else 'SELL ✓' if b4==-1 else '—'}\n1H: {'BUY ✓' if b1==1 else 'SELL ✓' if b1==-1 else '—'}\n15m: {s15}\n5m: {s5}\n{datetime.now(timezone.utc).strftime('%H:%M UTC')}"
