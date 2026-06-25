@@ -5,7 +5,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT")
 CHAT_ID = int(os.getenv("TELEGRAM_CHAT", "0"))
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0")) or CHAT_ID # set ADMIN_ID in Railway, or it uses your CHAT_ID
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0")) or CHAT_ID
 DATA_FILE = "/tmp/pairs.json"
 USERS_FILE = "/tmp/users.json"
 
@@ -40,21 +40,29 @@ user_state = {}
 def is_admin(uid): return uid == ADMIN_ID
 def is_allowed(uid): return uid in USERS
 
-# === FIXED DATA FETCHER ===
+# === CLEAN DATA FETCHER - NO curl_cffi ===
 def get_data(symbol, interval, period="7d"):
     try:
-        from curl_cffi import requests as creq
-        session = creq.Session(impersonate="chrome110")
-        df = yf.download(symbol, interval=interval, period=period,
-                         progress=False, session=session, threads=False)
-        return df.dropna() if not df.empty else None
-    except: return None
+        df = yf.download(
+            symbol,
+            interval=interval,
+            period=period,
+            progress=False,
+            threads=False,
+            auto_adjust=False,
+            prepost=True
+        )
+        if df is None or df.empty:
+            return None
+        return df.dropna()
+    except Exception as e:
+        print(f"Error {symbol}: {e}")
+        return None
 
 def bias_htf(df):
     if df is None or len(df) < 2: return 0
     return 1 if df['Close'].iloc[-1] > df['High'].iloc[-2] else -1 if df['Close'].iloc[-1] < df['Low'].iloc[-2] else 0
 
-# === NEW: exact TV logic ===
 def cisd_state(df):
     if df is None or len(df) < 6: return "—"
     h, l, c = df['High'].iloc[-6:-1].max(), df['Low'].iloc[-6:-1].min(), df['Close'].iloc[-1]
@@ -82,13 +90,9 @@ def check_pair(name, cfg):
     m5 = get_data(sym, "5m", "2d")
     b4, b1 = bias_htf(h4), bias_htf(h1)
     s15, s5 = cisd_state(m15), cisd_state(m5)
-
     buy_cross = is_crossover(m5, "buy")
     sell_cross = is_crossover(m5, "sell")
-
-    # DEBUG - watch Railway logs
     print(f"{name} | 4H:{b4} 1H:{b1} buyX:{buy_cross} sellX:{sell_cross}")
-
     sig = None
     if b1 == 1 and b1 == b4 and buy_cross: sig = "FRACTAL BUY"
     if b1 == -1 and b1 == b4 and sell_cross: sig = "FRACTAL SELL"
@@ -101,12 +105,11 @@ async def scanner(app):
         for n,c in PAIRS.items():
             msg = check_pair(n,c)
             if msg:
-                for uid in USERS: # send to ALL allowed users, not just CHAT_ID
+                for uid in USERS:
                     try: await app.bot.send_message(uid, msg)
                     except: pass
         await asyncio.sleep(60)
 
-# === BOTTOM KEYBOARD ===
 def main_menu(uid):
     base = [["➕ Add Pair", "📋 My Pairs"], ["❌ Remove", "⬅ Back"]]
     if is_admin(uid): base.append(["👑 Admin"])
@@ -127,8 +130,6 @@ async def text_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(uid): return
     txt = update.message.text.strip()
     state = user_state.get(uid)
-
-    # ADMIN PANEL
     if txt == "👑 Admin" and is_admin(uid):
         await update.message.reply_text("Admin Panel:", reply_markup=ReplyKeyboardMarkup([["Add User","Remove User"],["List Users","⬅ Back"]], resize_keyboard=True)); return
     if txt == "Add User" and is_admin(uid): user_state[uid]="add_user"; await update.message.reply_text("Send Telegram ID to add:"); return
@@ -136,13 +137,10 @@ async def text_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if txt == "List Users" and is_admin(uid): await update.message.reply_text("Users:\n" + "\n".join(map(str, USERS)), reply_markup=main_menu(uid)); return
     if state == "add_user": USERS.append(int(txt)); save_json(USERS_FILE, list(set(USERS))); user_state[uid]=None; await update.message.reply_text("✅ User added", reply_markup=main_menu(uid)); return
     if state == "del_user": USERS.remove(int(txt)) if int(txt) in USERS else None; save_json(USERS_FILE, USERS); user_state[uid]=None; await update.message.reply_text("✅ User removed", reply_markup=main_menu(uid)); return
-
-    # NORMAL BUTTONS
     if txt == "➕ Add Pair": user_state[uid]="adding"; await update.message.reply_text("Send pair like: XAUUSD=X", reply_markup=main_menu(uid)); return
     if txt == "📋 My Pairs": pairs = "\n".join([f"{k} → {v['yf']}" for k,v in PAIRS.items()]); await update.message.reply_text(f"Your pairs:\n{pairs}", reply_markup=main_menu(uid)); return
     if txt == "❌ Remove": user_state[uid]="removing"; await update.message.reply_text("Send NAME to remove (e.g. XAUUSD)", reply_markup=main_menu(uid)); return
     if txt == "⬅ Back": await update.message.reply_text("Back", reply_markup=main_menu(uid)); return
-
     if state == "adding": sym=txt.upper(); name=sym.split("=")[0].split("-")[0]; PAIRS[name]={"yf":sym,"corr":""}; save_pairs(PAIRS); user_state[uid]=None; await update.message.reply_text(f"✅ Added {sym}", reply_markup=main_menu(uid))
     elif state == "removing": PAIRS.pop(txt.upper(),None); save_pairs(PAIRS); user_state[uid]=None; await update.message.reply_text("✅ Removed", reply_markup=main_menu(uid))
 
