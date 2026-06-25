@@ -1,4 +1,3 @@
-yfinance==0.2.31
-curl_cffi==0.6.2
 python-telegram-bot==21.4
 pandas==2.1.4
+tvDatafeed==2.1.0
