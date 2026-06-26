@@ -1,4 +1,4 @@
 python-telegram-bot==21.4
 pandas==2.1.4
-tvdatafeed==1.2.7
+tvDatafeed==2.1.0
 websocket-client==1.6.4
