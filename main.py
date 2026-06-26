@@ -54,40 +54,51 @@ def get_current_price(tv):
         if tv == "GBPUSD":
             r = requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=5)
             return round(1 / r.json()["rates"]["GBP"], 5)
+
         if tv == "NAS100":
-            r = requests.get("https://api.twelvedata.com/price?symbol=NDX&exchange=NASDAQ&apikey=demo", timeout=5)
-            return round(float(r.json()["price"]), 2)
+            # 1) Stooq (fastest)
+            try:
+                r = requests.get("https://stooq.com/q/l/?s=^ndx&f=c", timeout=4)
+                p = float(r.text.strip())
+                if 10000 < p < 30000: return round(p, 2)
+            except: pass
+            # 2) Yahoo
+            try:
+                r = requests.get("https://query1.finance.yahoo.com/v8/finance/chart/%5ENDX?range=1d&interval=1m",
+                                headers={"User-Agent":"Mozilla/5.0"}, timeout=4)
+                p = r.json()["chart"]["result"][0]["meta"]["regularMarketPrice"]
+                if 10000 < p < 30000: return round(p, 2)
+            except: pass
+            # 3) TwelveData
+            try:
+                r = requests.get("https://api.twelvedata.com/price?symbol=NDX&exchange=NASDAQ&apikey=demo", timeout=4)
+                p = float(r.json()["price"])
+                return round(p, 2)
+            except: pass
+
         if tv == "US30":
-            r = requests.get("https://api.twelvedata.com/price?symbol=DJI&exchange=DJI&apikey=demo", timeout=5)
-            return round(float(r.json()["price"]), 2)
+            # 1) Stooq
+            try:
+                r = requests.get("https://stooq.com/q/l/?s=^dji&f=c", timeout=4)
+                p = float(r.text.strip())
+                if 20000 < p < 60000: return round(p, 2)
+            except: pass
+            # 2) Yahoo
+            try:
+                r = requests.get("https://query1.finance.yahoo.com/v8/finance/chart/%5EDJI?range=1d&interval=1m",
+                                headers={"User-Agent":"Mozilla/5.0"}, timeout=4)
+                p = r.json()["chart"]["result"][0]["meta"]["regularMarketPrice"]
+                if 20000 < p < 60000: return round(p, 2)
+            except: pass
+            # 3) TwelveData
+            try:
+                r = requests.get("https://api.twelvedata.com/price?symbol=DJI&exchange=DJI&apikey=demo", timeout=4)
+                p = float(r.json()["price"])
+                return round(p, 2)
+            except: pass
+
     except Exception as e:
         print(f"Price err {tv}: {e}")
-    return None
-
-def bias_htf(df):
-    if df is None or len(df)<2: return 0
-    return 1 if df['Close'].iloc[-1] > df['High'].iloc[-2] else -1 if df['Close'].iloc[-1] < df['Low'].iloc[-2] else 0
-
-def is_crossover(df, d):
-    if df is None or len(df)<7: return False
-    ph,ch = df['High'].iloc[-7:-2].max(), df['High'].iloc[-6:-1].max()
-    pl,cl = df['Low'].iloc[-7:-2].min(), df['Low'].iloc[-6:-1].min()
-    pc,cc = df['Close'].iloc[-2], df['Close'].iloc[-1]
-    return (pc <= ph and cc > ch) if d=="buy" else (pc >= pl and cc < cl)
-
-def check_fractal(name, cfg):
-    h4 = get_data(cfg["tv"], '4h')
-    h1 = get_data(cfg["tv"], '1h')
-    m5 = get_data(cfg["tv"], '5m')
-    b4,b1 = bias_htf(h4), bias_htf(h1)
-    if b1==1 and b1==b4 and is_crossover(m5,"buy"):
-        if last_signals.get(name)!= "buy":
-            last_signals[name]="buy"
-            return f"🚨 {name}\nFr buy\n{datetime.now(timezone.utc).strftime('%H:%M UTC')}"
-    if b1==-1 and b1==b4 and is_crossover(m5,"sell"):
-        if last_signals.get(name)!= "sell":
-            last_signals[name]="sell"
-            return f"🚨 {name}\nFr sell\n{datetime.now(timezone.utc).strftime('%H:%M UTC')}"
     return None
 
 async def scanner(app):
