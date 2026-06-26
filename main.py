@@ -1,4 +1,4 @@
-import os, json, asyncio, threading, pandas as pd, time, requests
+import os, json, asyncio, threading, pandas as pd, requests
 from datetime import datetime, timezone
 from yahooquery import Ticker
 from telegram import Update, ReplyKeyboardMarkup
@@ -30,7 +30,7 @@ def is_admin(uid): return uid == ADMIN_ID
 def is_allowed(uid): return uid in USERS
 def save_pairs(): save_json(DATA_FILE, PAIRS)
 
-# === YAHOOQUERY for scanner (keep) ===
+# === YAHOOQUERY for scanner ===
 YF_MAP = {
     "XAUUSD": "XAUUSD=X",
     "EURUSD": "EURUSD=X",
@@ -45,15 +45,6 @@ YF_MAP = {
     "ETHUSD": "ETH-USD",
 }
 print("YahooQuery ready")
-
-# === TWELVEDATA for Prices (fast + no block) ===
-TD_MAP = {
-    "XAUUSD": "XAU/USD",
-    "NAS100": "NDX",
-    "EURUSD": "EUR/USD",
-    "GBPUSD": "GBP/USD",
-    "US30": "DJI",
-}
 
 def get_data(tv_symbol, exchange, interval, n_bars=300):
     yf_sym = YF_MAP.get(tv_symbol, tv_symbol)
@@ -77,17 +68,32 @@ def get_data(tv_symbol, exchange, interval, n_bars=300):
         return None
 
 def get_current_price(tv_symbol):
-    # TwelveData - instant, works on Railway
-    sym = TD_MAP.get(tv_symbol, tv_symbol)
+    # NO API KEY - 3 free sources
     try:
-        url = f"https://api.twelvedata.com/price?symbol={sym}&apikey=demo"
-        r = requests.get(url, timeout=5)
-        if r.status_code == 200:
-            data = r.json()
-            if "price" in data:
-                return round(float(data["price"]), 5)
+        if tv_symbol == "XAUUSD":
+            r = requests.get("https://api.gold-api.com/price/XAU", timeout=5)
+            return round(r.json().get("price", 0), 2)
+
+        if tv_symbol == "EURUSD":
+            r = requests.get("https://api.exchangerate.host/convert?from=EUR&to=USD", timeout=5)
+            return round(r.json().get("result", 0), 5)
+
+        if tv_symbol == "GBPUSD":
+            r = requests.get("https://api.exchangerate.host/convert?from=GBP&to=USD", timeout=5)
+            return round(r.json().get("result", 0), 5)
+
+        if tv_symbol == "NAS100":
+            r = requests.get("https://stooq.com/q/l/?s=^ndx&f=l", timeout=5)
+            price = float(r.text.strip().split("\n")[-1])
+            return round(price, 2)
+
+        if tv_symbol == "US30":
+            r = requests.get("https://stooq.com/q/l/?s=^dji&f=l", timeout=5)
+            price = float(r.text.strip().split("\n")[-1])
+            return round(price, 2)
+
     except Exception as e:
-        print(f"TD ERR {sym}: {e}")
+        print(f"Price ERR {tv_symbol}: {e}")
     return None
 
 # === STRATEGY ===
@@ -202,5 +208,5 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("id", id_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     threading.Thread(target=lambda: asyncio.run(scanner(app)), daemon=True).start()
-    print("Bot started with TwelveData prices")
+    print("Bot started - Prices using free APIs")
     app.run_polling(drop_pending_updates=True)
