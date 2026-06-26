@@ -30,7 +30,7 @@ def is_admin(uid): return uid == ADMIN_ID
 def is_allowed(uid): return uid in USERS
 def save_pairs(): save_json(DATA_FILE, PAIRS)
 
-# === YAHOOQUERY for scanner ===
+# === YAHOO for scanner ===
 YF_MAP = {
     "XAUUSD": "XAUUSD=X",
     "EURUSD": "EURUSD=X",
@@ -68,32 +68,26 @@ def get_data(tv_symbol, exchange, interval, n_bars=300):
         return None
 
 def get_current_price(tv_symbol):
-    # NO API KEY - 3 free sources
+    # ONE SOURCE - Yahoo direct chart API
+    yahoo_map = {
+        "XAUUSD": "XAUUSD=X",
+        "NAS100": "^NDX",
+        "EURUSD": "EURUSD=X",
+        "GBPUSD": "GBPUSD=X",
+        "US30": "^DJI",
+    }
+    sym = yahoo_map.get(tv_symbol)
+    if not sym:
+        return None
     try:
-        if tv_symbol == "XAUUSD":
-            r = requests.get("https://api.gold-api.com/price/XAU", timeout=5)
-            return round(r.json().get("price", 0), 2)
-
-        if tv_symbol == "EURUSD":
-            r = requests.get("https://api.exchangerate.host/convert?from=EUR&to=USD", timeout=5)
-            return round(r.json().get("result", 0), 5)
-
-        if tv_symbol == "GBPUSD":
-            r = requests.get("https://api.exchangerate.host/convert?from=GBP&to=USD", timeout=5)
-            return round(r.json().get("result", 0), 5)
-
-        if tv_symbol == "NAS100":
-            r = requests.get("https://stooq.com/q/l/?s=^ndx&f=l", timeout=5)
-            price = float(r.text.strip().split("\n")[-1])
-            return round(price, 2)
-
-        if tv_symbol == "US30":
-            r = requests.get("https://stooq.com/q/l/?s=^dji&f=l", timeout=5)
-            price = float(r.text.strip().split("\n")[-1])
-            return round(price, 2)
-
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?range=1d&interval=1m"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        r = requests.get(url, headers=headers, timeout=5)
+        data = r.json()
+        price = data["chart"]["result"][0]["meta"]["regularMarketPrice"]
+        return round(float(price), 5 if "USD" in tv_symbol and tv_symbol!= "XAUUSD" else 2)
     except Exception as e:
-        print(f"Price ERR {tv_symbol}: {e}")
+        print(f"Yahoo direct ERR {sym}: {e}")
     return None
 
 # === STRATEGY ===
@@ -208,5 +202,5 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("id", id_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     threading.Thread(target=lambda: asyncio.run(scanner(app)), daemon=True).start()
-    print("Bot started - Prices using free APIs")
+    print("Bot started - Yahoo direct prices")
     app.run_polling(drop_pending_updates=True)
