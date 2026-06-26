@@ -1,6 +1,5 @@
-import os, json, asyncio, threading, pandas as pd, requests
+import os, json, asyncio, threading, pandas as pd, requests, yfinance as yf
 from datetime import datetime, timezone
-from yahooquery import Ticker
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
@@ -31,32 +30,32 @@ YF_MAP = {"XAUUSD":"XAUUSD=X","EURUSD":"EURUSD=X","GBPUSD":"GBPUSD=X","NAS100":"
 
 def get_data(sym, interval):
     try:
-        t = Ticker(YF_MAP.get(sym, sym))
-        df = t.history(period='60d', interval={'5m':'5m','1h':'1h','4h':'1h'}.get(interval,'5m'))
-        if df is None or df.empty: return None
-        if isinstance(df.index, pd.MultiIndex): df = df.reset_index(level=0, drop=True)
-        df = df.reset_index().rename(columns={'open':'Open','high':'High','low':'Low','close':'Close'})
+        yf_sym = YF_MAP.get(sym, sym)
+        tf = '5m' if interval=='5m' else '1h'
+        period = '7d' if interval=='5m' else '60d' if interval=='1h' else '730d'
+        df = yf.download(yf_sym, period=period, interval=tf, progress=False, auto_adjust=False, threads=False)
+        if df.empty: return None
+        df = df.rename(columns={'Open':'Open','High':'High','Low':'Low','Close':'Close'})
         df = df[['Open','High','Low','Close']].dropna()
         if interval == '4h':
-            df = df.set_index(pd.to_datetime(df.index))
             df = df.resample('4h').agg({'Open':'first','High':'max','Low':'min','Close':'last'}).dropna()
         return df.tail(200)
-    except: return None
+    except Exception as e:
+        print(f"yf err {sym} {interval}: {e}")
+        return None
 
 def get_current_price(tv):
     try:
         if tv == "XAUUSD":
             return round(requests.get("https://api.gold-api.com/price/XAU", timeout=5).json().get("price",0),2)
         if tv == "EURUSD":
-            return round(1/requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=5).json()["rates"]["EUR"],5)
+            return round(yf.Ticker("EURUSD=X").fast_info.last_price,5)
         if tv == "GBPUSD":
-            return round(1/requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=5).json()["rates"]["GBP"],5)
+            return round(yf.Ticker("GBPUSD=X").fast_info.last_price,5)
         if tv == "NAS100":
-            r = requests.get("https://query1.finance.yahoo.com/v8/finance/chart/%5ENDX?range=1d&interval=1m", headers={"User-Agent":"Mozilla/5.0"}, timeout=5)
-            return round(r.json()["chart"]["result"][0]["meta"]["regularMarketPrice"],2)
+            return round(yf.Ticker("^NDX").fast_info.last_price,2)
         if tv == "US30":
-            r = requests.get("https://query1.finance.yahoo.com/v8/finance/chart/%5EDJI?range=1d&interval=1m", headers={"User-Agent":"Mozilla/5.0"}, timeout=5)
-            return round(r.json()["chart"]["result"][0]["meta"]["regularMarketPrice"],2)
+            return round(yf.Ticker("^DJI").fast_info.last_price,2)
     except: return None
 
 def bias_htf(df):
@@ -145,4 +144,4 @@ if __name__=="__main__":
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text))
     threading.Thread(target=lambda: asyncio.run(scanner(app)), daemon=True).start()
     print("Bot started")
-    app.run_polling(drop_pending_updates=True)
+    app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
