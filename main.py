@@ -46,59 +46,43 @@ def get_data(sym, interval):
 def get_current_price(tv):
     try:
         if tv == "XAUUSD":
-            r = requests.get("https://api.gold-api.com/price/XAU", timeout=5)
-            return round(r.json().get("price", 0), 2)
+            return round(requests.get("https://api.gold-api.com/price/XAU", timeout=5).json().get("price",0),2)
         if tv == "EURUSD":
-            r = requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=5)
-            return round(1 / r.json()["rates"]["EUR"], 5)
+            return round(1/requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=5).json()["rates"]["EUR"],5)
         if tv == "GBPUSD":
-            r = requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=5)
-            return round(1 / r.json()["rates"]["GBP"], 5)
-
+            return round(1/requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=5).json()["rates"]["GBP"],5)
         if tv == "NAS100":
-            # 1) Stooq (fastest)
-            try:
-                r = requests.get("https://stooq.com/q/l/?s=^ndx&f=c", timeout=4)
-                p = float(r.text.strip())
-                if 10000 < p < 30000: return round(p, 2)
-            except: pass
-            # 2) Yahoo
-            try:
-                r = requests.get("https://query1.finance.yahoo.com/v8/finance/chart/%5ENDX?range=1d&interval=1m",
-                                headers={"User-Agent":"Mozilla/5.0"}, timeout=4)
-                p = r.json()["chart"]["result"][0]["meta"]["regularMarketPrice"]
-                if 10000 < p < 30000: return round(p, 2)
-            except: pass
-            # 3) TwelveData
-            try:
-                r = requests.get("https://api.twelvedata.com/price?symbol=NDX&exchange=NASDAQ&apikey=demo", timeout=4)
-                p = float(r.json()["price"])
-                return round(p, 2)
-            except: pass
-
+            r = requests.get("https://query1.finance.yahoo.com/v8/finance/chart/%5ENDX?range=1d&interval=1m", headers={"User-Agent":"Mozilla/5.0"}, timeout=5)
+            return round(r.json()["chart"]["result"][0]["meta"]["regularMarketPrice"],2)
         if tv == "US30":
-            # 1) Stooq
-            try:
-                r = requests.get("https://stooq.com/q/l/?s=^dji&f=c", timeout=4)
-                p = float(r.text.strip())
-                if 20000 < p < 60000: return round(p, 2)
-            except: pass
-            # 2) Yahoo
-            try:
-                r = requests.get("https://query1.finance.yahoo.com/v8/finance/chart/%5EDJI?range=1d&interval=1m",
-                                headers={"User-Agent":"Mozilla/5.0"}, timeout=4)
-                p = r.json()["chart"]["result"][0]["meta"]["regularMarketPrice"]
-                if 20000 < p < 60000: return round(p, 2)
-            except: pass
-            # 3) TwelveData
-            try:
-                r = requests.get("https://api.twelvedata.com/price?symbol=DJI&exchange=DJI&apikey=demo", timeout=4)
-                p = float(r.json()["price"])
-                return round(p, 2)
-            except: pass
+            r = requests.get("https://query1.finance.yahoo.com/v8/finance/chart/%5EDJI?range=1d&interval=1m", headers={"User-Agent":"Mozilla/5.0"}, timeout=5)
+            return round(r.json()["chart"]["result"][0]["meta"]["regularMarketPrice"],2)
+    except: return None
 
-    except Exception as e:
-        print(f"Price err {tv}: {e}")
+def bias_htf(df):
+    if df is None or len(df)<2: return 0
+    return 1 if df['Close'].iloc[-1] > df['High'].iloc[-2] else -1 if df['Close'].iloc[-1] < df['Low'].iloc[-2] else 0
+
+def is_crossover(df, d):
+    if df is None or len(df)<7: return False
+    ph,ch = df['High'].iloc[-7:-2].max(), df['High'].iloc[-6:-1].max()
+    pl,cl = df['Low'].iloc[-7:-2].min(), df['Low'].iloc[-6:-1].min()
+    pc,cc = df['Close'].iloc[-2], df['Close'].iloc[-1]
+    return (pc <= ph and cc > ch) if d=="buy" else (pc >= pl and cc < cl)
+
+def check_fractal(name, cfg):
+    h4 = get_data(cfg["tv"], '4h')
+    h1 = get_data(cfg["tv"], '1h')
+    m5 = get_data(cfg["tv"], '5m')
+    b4,b1 = bias_htf(h4), bias_htf(h1)
+    if b1==1 and b1==b4 and is_crossover(m5,"buy"):
+        if last_signals.get(name)!= "buy":
+            last_signals[name]="buy"
+            return f"🚨 {name}\nFr buy\n{datetime.now(timezone.utc).strftime('%H:%M UTC')}"
+    if b1==-1 and b1==b4 and is_crossover(m5,"sell"):
+        if last_signals.get(name)!= "sell":
+            last_signals[name]="sell"
+            return f"🚨 {name}\nFr sell\n{datetime.now(timezone.utc).strftime('%H:%M UTC')}"
     return None
 
 async def scanner(app):
@@ -119,27 +103,22 @@ def menu(uid):
 
 async def start(u,c):
     if not is_allowed(u.effective_user.id): await u.message.reply_text(f"ID: {u.effective_user.id}"); return
-    await u.message.reply_text("✅ Fr Bot Ready", reply_markup=menu(u.effective_user.id))
+    await u.message.reply_text("✅ Fr Bot Ready\n/testfr = test alert\n/status = live data", reply_markup=menu(u.effective_user.id))
 
-
-    async def testfr(u,c):
+async def testfr(u,c):
     if not is_allowed(u.effective_user.id): return
-    msg = f"🚨 XAUUSD\nFr buy (TEST)\n{datetime.now(timezone.utc).strftime('%H:%M UTC')}"
-    await u.message.reply_text(msg)
+    await u.message.reply_text(f"🚨 XAUUSD\nFr buy (TEST)\n{datetime.now(timezone.utc).strftime('%H:%M UTC')}")
 
 async def status(u,c):
     if not is_allowed(u.effective_user.id): return
     txt = "📊 LIVE STATUS\n\n"
     for n,cfg in PAIRS.items():
-        h4 = get_data(cfg["tv"], '4h')
-        h1 = get_data(cfg["tv"], '1h')
-        m5 = get_data(cfg["tv"], '5m')
+        h4 = get_data(cfg["tv"], '4h'); h1 = get_data(cfg["tv"], '1h'); m5 = get_data(cfg["tv"], '5m')
         b4 = "BUY" if bias_htf(h4)==1 else "SELL" if bias_htf(h4)==-1 else "—"
         b1 = "BUY" if bias_htf(h1)==1 else "SELL" if bias_htf(h1)==-1 else "—"
         if m5 is not None and len(m5)>2:
-            last_high = m5['High'].iloc[-6:-1].max()
-            last_low = m5['Low'].iloc[-6:-1].min()
-            txt += f"{n}: 4H {b4} | 1H {b1} | 5m H:{last_high:.2f} L:{last_low:.2f}\n"
+            h = m5['High'].iloc[-6:-1].max(); l = m5['Low'].iloc[-6:-1].min()
+            txt += f"{n}: 4H {b4} | 1H {b1} | 5m {h:.2f}/{l:.2f}\n"
         else:
             txt += f"{n}: no data\n"
     await u.message.reply_text(txt)
@@ -161,9 +140,9 @@ async def text(u,c):
 if __name__=="__main__":
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("testfr", testfr))
+    app.add_handler(CommandHandler("status", status))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text))
     threading.Thread(target=lambda: asyncio.run(scanner(app)), daemon=True).start()
-    app.add_handler(CommandHandler("testfr", testfr))
-app.add_handler(CommandHandler("status", status))
     print("Bot started")
     app.run_polling(drop_pending_updates=True)
