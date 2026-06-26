@@ -1,16 +1,12 @@
 import os, json, asyncio, threading, pandas as pd
 from datetime import datetime, timezone
+import yfinance as yf
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-
-# === NEW: TradingView data (free) ===
-from tvDatafeed import TvDatafeed, Interval
 
 # === CONFIG ===
 BOT_TOKEN = os.getenv("TELEGRAM_BOT")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-TV_USER = os.getenv("TV_USER") # optional: your TradingView email
-TV_PASS = os.getenv("TV_PASS") # optional: your TradingView password
 DATA_FILE = "pairs.json"
 USERS_FILE = "users.json"
 
@@ -19,12 +15,13 @@ def load_json(path, default):
 def save_json(path, data):
     json.dump(data, open(path, "w"), indent=2)
 
+# your pairs - tv field is now the symbol we map to yfinance
 PAIRS = load_json(DATA_FILE, {
     "XAUUSD": {"tv": "XAUUSD", "ex": "OANDA"},
-    "NAS100": {"tv": "NQ1!", "ex": "CME_MINI"},
+    "NAS100": {"tv": "NAS100", "ex": "CME"},
     "EURUSD": {"tv": "EURUSD", "ex": "OANDA"},
     "GBPUSD": {"tv": "GBPUSD", "ex": "OANDA"},
-    "US30": {"tv": "YM1!", "ex": "CBOT_MINI"},
+    "US30": {"tv": "US30", "ex": "CBOT"},
 })
 USERS = load_json(USERS_FILE, [ADMIN_ID] if ADMIN_ID else [])
 last_signals = {}
@@ -34,21 +31,45 @@ def is_admin(uid): return uid == ADMIN_ID
 def is_allowed(uid): return uid in USERS
 def save_pairs(): save_json(DATA_FILE, PAIRS)
 
-# === TV SETUP ===
-tv = TvDatafeed(TV_USER, TV_PASS) if TV_USER and TV_PASS else TvDatafeed()
-print("TV connected")
+# === YFINANCE SETUP ===
+YF_MAP = {
+    "XAUUSD": "XAUUSD=X",
+    "EURUSD": "EURUSD=X",
+    "GBPUSD": "GBPUSD=X",
+    "GBPJPY": "GBPJPY=X",
+    "EURJPY": "EURJPY=X",
+    "USDJPY": "JPY=X",
+    "NAS100": "^NDX", # Nasdaq 100 index - use "NQ=F" for futures
+    "US30": "^DJI", # Dow Jones - use "YM=F" for futures
+    "SPX500": "^GSPC",
+    "BTCUSD": "BTC-USD",
+    "ETHUSD": "ETH-USD",
+    "NQ1!": "^NDX",
+    "YM1!": "^DJI",
+    "ES1!": "^GSPC",
+}
+print("YFinance ready")
 
 def get_data(tv_symbol, exchange, interval, n_bars=300):
-    """Pull from TradingView instead of MT5"""
+    """Pull from Yahoo Finance instead of TradingView/MT5"""
+    yf_sym = YF_MAP.get(tv_symbol, tv_symbol)
+    # map intervals
+    tf_map = {'5m':'5m', '15m':'15m', '1h':'60m', '4h':'240m'}
+    yf_interval = tf_map.get(interval, '15m')
+
     try:
-        df = tv.get_hist(symbol=tv_symbol, exchange=exchange, interval=interval, n_bars=n_bars)
+        # yfinance needs different periods for different intervals
+        period = '7d' if yf_interval in ['5m','15m'] else '60d'
+        df = yf.download(yf_sym, period=period, interval=yf_interval, progress=False, auto_adjust=False)
+
         if df is None or df.empty:
-            print(f"TV ERR {tv_symbol}@{exchange} empty")
+            print(f"YF ERR {yf_sym} empty")
             return None
-        df = df.rename(columns={'open':'Open','high':'High','low':'Low','close':'Close'})
-        return df[['Open','High','Low','Close']].dropna()
+
+        df = df.rename(columns={'Open':'Open','High':'High','Low':'Low','Close':'Close'})
+        return df[['Open','High','Low','Close']].tail(n_bars).dropna()
     except Exception as e:
-        print(f"TV ERR {tv_symbol}@{exchange}: {e}")
+        print(f"YF ERR {yf_sym}@{exchange}: {e}")
         return None
 
 # === STRATEGY FUNCTIONS - DO NOT CHANGE ===
@@ -73,10 +94,10 @@ def is_crossover(df, direction="buy"):
 
 def check_pair(name, cfg):
     tv_sym, ex = cfg["tv"], cfg["ex"]
-    h1 = get_data(tv_sym, ex, Interval.in_1_hour, 200)
-    h4 = get_data(tv_sym, ex, Interval.in_4_hour, 200)
-    m15 = get_data(tv_sym, ex, Interval.in_15_minute, 200)
-    m5 = get_data(tv_sym, ex, Interval.in_5_minute, 200)
+    h1 = get_data(tv_sym, ex, '1h', 200)
+    h4 = get_data(tv_sym, ex, '4h', 200)
+    m15 = get_data(tv_sym, ex, '15m', 200)
+    m5 = get_data(tv_sym, ex, '5m', 200)
 
     b4, b1 = bias_htf(h4), bias_htf(h1)
     s15, s5 = cisd_state(m15), cisd_state(m5)
@@ -101,6 +122,7 @@ async def scanner(app):
                 for uid in USERS:
                     try: await app.bot.send_message(uid, msg)
                     except Exception as e: print(f"TG err {e}")
+        # sleep to next M5 bar
         now = datetime.now(timezone.utc)
         secs_to_next = 300 - ((now.minute % 5) * 60 + now.second)
         await asyncio.sleep(max(5, secs_to_next))
@@ -116,7 +138,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(uid):
         await update.message.reply_text(f"⛔ Not authorized\nYour ID: {uid}")
         return
-    await update.message.reply_text("✅ Qumbul TV is ALIVE bro!", reply_markup=main_menu(uid))
+    await update.message.reply_text("✅ Qumbul YF is ALIVE bro!", reply_markup=main_menu(uid))
 
 async def id_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Your ID: {update.effective_user.id}")
@@ -159,5 +181,5 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("id", id_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     threading.Thread(target=lambda: asyncio.run(scanner(app)), daemon=True).start()
-    print("Bot started with TradingView data")
+    print("Bot started with Yahoo Finance data")
     app.run_polling()
