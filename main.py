@@ -59,30 +59,40 @@ def get_current_price(tv):
             return round(r.json()["chart"]["result"][0]["meta"]["regularMarketPrice"],2)
     except: return None
 
-def bias_htf(df):
-    if df is None or len(df)<2: return 0
-    return 1 if df['Close'].iloc[-1] > df['High'].iloc[-2] else -1 if df['Close'].iloc[-1] < df['Low'].iloc[-2] else 0
-
-def is_crossover(df, d):
-    if df is None or len(df)<7: return False
-    ph,ch = df['High'].iloc[-7:-2].max(), df['High'].iloc[-6:-1].max()
-    pl,cl = df['Low'].iloc[-7:-2].min(), df['Low'].iloc[-6:-1].min()
-    pc,cc = df['Close'].iloc[-2], df['Close'].iloc[-1]
-    return (pc <= ph and cc > ch) if d=="buy" else (pc >= pl and cc < cl)
+# === PINE-EXACT LOGIC ===
+def bias_htf_pine(df):
+    if df is None or len(df) < 2: return 0
+    # close > high[1]? 1 : close < low[1]? -1 : 0
+    if df['Close'].iloc[-1] > df['High'].iloc[-2]: return 1
+    if df['Close'].iloc[-1] < df['Low'].iloc[-2]: return -1
+    return 0
 
 def check_fractal(name, cfg):
     h4 = get_data(cfg["tv"], '4h')
     h1 = get_data(cfg["tv"], '1h')
     m5 = get_data(cfg["tv"], '5m')
-    b4,b1 = bias_htf(h4), bias_htf(h1)
-    if b1==1 and b1==b4 and is_crossover(m5,"buy"):
-        if last_signals.get(name)!= "buy":
-            last_signals[name]="buy"
-            return f"🚨 {name}\nFr buy\n{datetime.now(timezone.utc).strftime('%H:%M UTC')}"
-    if b1==-1 and b1==b4 and is_crossover(m5,"sell"):
-        if last_signals.get(name)!= "sell":
-            last_signals[name]="sell"
-            return f"🚨 {name}\nFr sell\n{datetime.now(timezone.utc).strftime('%H:%M UTC')}"
+
+    if h4 is None or h1 is None or m5 is None or len(m5) < 7:
+        return None
+
+    b4 = bias_htf_pine(h4)
+    b1 = bias_htf_pine(h1)
+
+    # Pine: highest(5)[1] and lowest(5)[1]
+    prev_high_5 = m5['High'].iloc[-6:-1].max()
+    prev_low_5 = m5['Low'].iloc[-6:-1].min()
+    prev_close = m5['Close'].iloc[-2]
+    curr_close = m5['Close'].iloc[-1]
+
+    fBuy = (b1 == 1 and b4 == 1 and prev_close <= prev_high_5 and curr_close > prev_high_5)
+    fSell = (b1 == -1 and b4 == -1 and prev_close >= prev_low_5 and curr_close < prev_low_5)
+
+    if fBuy and last_signals.get(name)!= "buy":
+        last_signals[name] = "buy"
+        return f"🚨 {name}\nFr buy\n{datetime.now(timezone.utc).strftime('%H:%M UTC')}"
+    if fSell and last_signals.get(name)!= "sell":
+        last_signals[name] = "sell"
+        return f"🚨 {name}\nFr sell\n{datetime.now(timezone.utc).strftime('%H:%M UTC')}"
     return None
 
 async def scanner(app):
@@ -103,7 +113,7 @@ def menu(uid):
 
 async def start(u,c):
     if not is_allowed(u.effective_user.id): await u.message.reply_text(f"ID: {u.effective_user.id}"); return
-    await u.message.reply_text("✅ Fr Bot Ready\n/testfr = test\n/status = live\n/forcebuy /forcesell", reply_markup=menu(u.effective_user.id))
+    await u.message.reply_text("✅ Fr Bot Ready (Pine v5.9.14)\n/testfr /status /forcebuy /forcesell", reply_markup=menu(u.effective_user.id))
 
 async def testfr(u,c):
     if not is_allowed(u.effective_user.id): return
@@ -114,11 +124,12 @@ async def status(u,c):
     txt = "📊 LIVE STATUS\n\n"
     for n,cfg in PAIRS.items():
         h4 = get_data(cfg["tv"], '4h'); h1 = get_data(cfg["tv"], '1h'); m5 = get_data(cfg["tv"], '5m')
-        b4 = "BUY" if bias_htf(h4)==1 else "SELL" if bias_htf(h4)==-1 else "—"
-        b1 = "BUY" if bias_htf(h1)==1 else "SELL" if bias_htf(h1)==-1 else "—"
-        if m5 is not None and len(m5)>2:
-            h = m5['High'].iloc[-6:-1].max(); l = m5['Low'].iloc[-6:-1].min()
-            txt += f"{n}: 4H {b4} | 1H {b1} | 5m {h:.2f}/{l:.2f}\n"
+        b4 = bias_htf_pine(h4); b1 = bias_htf_pine(h1)
+        b4t = "BUY" if b4==1 else "SELL" if b4==-1 else "—"
+        b1t = "BUY" if b1==1 else "SELL" if b1==-1 else "—"
+        if m5 is not None and len(m5)>6:
+            ph = m5['High'].iloc[-6:-1].max(); pl = m5['Low'].iloc[-6:-1].min()
+            txt += f"{n}: 4H {b4t} | 1H {b1t} | 5m {ph:.2f}/{pl:.2f}\n"
         else:
             txt += f"{n}: no data\n"
     await u.message.reply_text(txt)
@@ -162,5 +173,5 @@ if __name__=="__main__":
     app.add_handler(CommandHandler("forcesell", forcesell))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text))
     threading.Thread(target=lambda: asyncio.run(scanner(app)), daemon=True).start()
-    print("Bot started")
+    print("Bot started - Pine fractal mode")
     app.run_polling(drop_pending_updates=True)
