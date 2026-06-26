@@ -103,7 +103,7 @@ def menu(uid):
 
 async def start(u,c):
     if not is_allowed(u.effective_user.id): await u.message.reply_text(f"ID: {u.effective_user.id}"); return
-    await u.message.reply_text("✅ Fr Bot Ready\n/testfr = test alert\n/status = live data", reply_markup=menu(u.effective_user.id))
+    await u.message.reply_text("✅ Fr Bot Ready\n/testfr = test\n/status = live\n/forcebuy /forcesell", reply_markup=menu(u.effective_user.id))
 
 async def testfr(u,c):
     if not is_allowed(u.effective_user.id): return
@@ -122,6 +122,22 @@ async def status(u,c):
         else:
             txt += f"{n}: no data\n"
     await u.message.reply_text(txt)
+
+async def forcebuy(u,c):
+    if not is_allowed(u.effective_user.id): return
+    pair = c.args[0].upper() if c.args else "XAUUSD"
+    msg = f"🚨 {pair}\nFr buy\n{datetime.now(timezone.utc).strftime('%H:%M UTC')}"
+    for uid in USERS:
+        try: await c.bot.send_message(uid, msg)
+        except: pass
+
+async def forcesell(u,c):
+    if not is_allowed(u.effective_user.id): return
+    pair = c.args[0].upper() if c.args else "XAUUSD"
+    msg = f"🚨 {pair}\nFr sell\n{datetime.now(timezone.utc).strftime('%H:%M UTC')}"
+    for uid in USERS:
+        try: await c.bot.send_message(uid, msg)
+        except: pass
 
 async def text(u,c):
     uid=u.message.from_user.id
@@ -142,6 +158,8 @@ if __name__=="__main__":
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("testfr", testfr))
     app.add_handler(CommandHandler("status", status))
+    app.add_handler(CommandHandler("forcebuy", forcebuy))
+    app.add_handler(CommandHandler("forcesell", forcesell))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text))
     threading.Thread(target=lambda: asyncio.run(scanner(app)), daemon=True).start()
     print("Bot started")
