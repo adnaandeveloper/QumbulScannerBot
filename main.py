@@ -1,32 +1,30 @@
 import os, json, asyncio, threading, pandas as pd
 from datetime import datetime, timezone
-from tvDatafeed import TvDatafeed, Interval
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+
+# === NEW: TradingView data (free) ===
+from tvDatafeed import TvDatafeed, Interval
 
 # === CONFIG ===
 BOT_TOKEN = os.getenv("TELEGRAM_BOT")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-DATA_FILE = "/tmp/pairs.json"
-USERS_FILE = "/tmp/users.json"
+TV_USER = os.getenv("TV_USER") # optional: your TradingView email
+TV_PASS = os.getenv("TV_PASS") # optional: your TradingView password
+DATA_FILE = "pairs.json"
+USERS_FILE = "users.json"
 
 def load_json(path, default):
     return json.load(open(path)) if os.path.exists(path) else default
 def save_json(path, data):
-    json.dump(data, open(path, "w"))
+    json.dump(data, open(path, "w"), indent=2)
 
 PAIRS = load_json(DATA_FILE, {
     "XAUUSD": {"tv": "XAUUSD", "ex": "OANDA"},
     "NAS100": {"tv": "NQ1!", "ex": "CME_MINI"},
-    "SPX500": {"tv": "ES1!", "ex": "CME_MINI"},
+    "EURUSD": {"tv": "EURUSD", "ex": "OANDA"},
     "GBPUSD": {"tv": "GBPUSD", "ex": "OANDA"},
     "US30": {"tv": "YM1!", "ex": "CBOT_MINI"},
-    "BTCUSD": {"tv": "BTCUSD", "ex": "BINANCE"},
-    "EURUSD": {"tv": "EURUSD", "ex": "OANDA"},
-    "ETHUSD": {"tv": "ETHUSD", "ex": "BINANCE"},
-    "GBPJPY": {"tv": "GBPJPY", "ex": "OANDA"},
-    "EURJPY": {"tv": "EURJPY", "ex": "OANDA"},
-    "USDJPY": {"tv": "USDJPY", "ex": "OANDA"},
 })
 USERS = load_json(USERS_FILE, [ADMIN_ID] if ADMIN_ID else [])
 last_signals = {}
@@ -36,20 +34,24 @@ def is_admin(uid): return uid == ADMIN_ID
 def is_allowed(uid): return uid in USERS
 def save_pairs(): save_json(DATA_FILE, PAIRS)
 
-# === TV DATA ===
-tv = TvDatafeed()
+# === TV SETUP ===
+tv = TvDatafeed(TV_USER, TV_PASS) if TV_USER and TV_PASS else TvDatafeed()
+print("TV connected")
 
 def get_data(tv_symbol, exchange, interval, n_bars=300):
+    """Pull from TradingView instead of MT5"""
     try:
         df = tv.get_hist(symbol=tv_symbol, exchange=exchange, interval=interval, n_bars=n_bars)
         if df is None or df.empty:
+            print(f"TV ERR {tv_symbol}@{exchange} empty")
             return None
         df = df.rename(columns={'open':'Open','high':'High','low':'Low','close':'Close'})
-        return df.dropna()
+        return df[['Open','High','Low','Close']].dropna()
     except Exception as e:
-        print(f"TV ERR {tv_symbol}: {e}")
+        print(f"TV ERR {tv_symbol}@{exchange}: {e}")
         return None
 
+# === STRATEGY FUNCTIONS - DO NOT CHANGE ===
 def bias_htf(df):
     if df is None or len(df) < 2: return 0
     return 1 if df['Close'].iloc[-1] > df['High'].iloc[-2] else -1 if df['Close'].iloc[-1] < df['Low'].iloc[-2] else 0
@@ -72,7 +74,7 @@ def is_crossover(df, direction="buy"):
 def check_pair(name, cfg):
     tv_sym, ex = cfg["tv"], cfg["ex"]
     h1 = get_data(tv_sym, ex, Interval.in_1_hour, 200)
-    h4 = h1.resample('4H').agg({'Open':'first','High':'max','Low':'min','Close':'last'}).dropna() if h1 is not None else None
+    h4 = get_data(tv_sym, ex, Interval.in_4_hour, 200)
     m15 = get_data(tv_sym, ex, Interval.in_15_minute, 200)
     m5 = get_data(tv_sym, ex, Interval.in_5_minute, 200)
 
@@ -98,8 +100,10 @@ async def scanner(app):
             if msg:
                 for uid in USERS:
                     try: await app.bot.send_message(uid, msg)
-                    except: pass
-        await asyncio.sleep(60)
+                    except Exception as e: print(f"TG err {e}")
+        now = datetime.now(timezone.utc)
+        secs_to_next = 300 - ((now.minute % 5) * 60 + now.second)
+        await asyncio.sleep(max(5, secs_to_next))
 
 # === TELEGRAM ===
 def main_menu(uid):
@@ -155,5 +159,5 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("id", id_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     threading.Thread(target=lambda: asyncio.run(scanner(app)), daemon=True).start()
-    print("Bot started with tvdatafeed")
+    print("Bot started with TradingView data")
     app.run_polling()
