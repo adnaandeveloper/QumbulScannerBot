@@ -71,8 +71,14 @@ def get_current_price(tv_symbol):
     yf_sym = YF_MAP.get(tv_symbol, tv_symbol)
     try:
         t = Ticker(yf_sym)
-        price = t.price[yf_sym].get('regularMarketPrice')
-        return round(price, 5) if price else None
+        # use 1-day history - bypasses crumb requirement
+        df = t.history(period='1d', interval='1m')
+        if df is not None and not df.empty:
+            if isinstance(df.index, pd.MultiIndex):
+                df = df.reset_index(level=0, drop=True)
+            price = df['close'].iloc[-1]
+            return round(float(price), 5)
+        return None
     except Exception as e:
         print(f"Price ERR {yf_sym}: {e}")
         return None
