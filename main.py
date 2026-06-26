@@ -1,6 +1,6 @@
 import os, json, asyncio, threading, pandas as pd
 from datetime import datetime, timezone
-import yfinance as yf
+from yahooquery import Ticker
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
@@ -15,7 +15,6 @@ def load_json(path, default):
 def save_json(path, data):
     json.dump(data, open(path, "w"), indent=2)
 
-# your pairs - tv field is now the symbol we map to yfinance
 PAIRS = load_json(DATA_FILE, {
     "XAUUSD": {"tv": "XAUUSD", "ex": "OANDA"},
     "NAS100": {"tv": "NAS100", "ex": "CME"},
@@ -31,7 +30,7 @@ def is_admin(uid): return uid == ADMIN_ID
 def is_allowed(uid): return uid in USERS
 def save_pairs(): save_json(DATA_FILE, PAIRS)
 
-# === YFINANCE SETUP ===
+# === YAHOOQUERY SETUP (works on Railway) ===
 YF_MAP = {
     "XAUUSD": "XAUUSD=X",
     "EURUSD": "EURUSD=X",
@@ -39,40 +38,48 @@ YF_MAP = {
     "GBPJPY": "GBPJPY=X",
     "EURJPY": "EURJPY=X",
     "USDJPY": "JPY=X",
-    "NAS100": "^NDX", # Nasdaq 100 index - use "NQ=F" for futures
-    "US30": "^DJI", # Dow Jones - use "YM=F" for futures
+    "NAS100": "^NDX",
+    "US30": "^DJI",
     "SPX500": "^GSPC",
     "BTCUSD": "BTC-USD",
     "ETHUSD": "ETH-USD",
-    "NQ1!": "^NDX",
-    "YM1!": "^DJI",
-    "ES1!": "^GSPC",
 }
-print("YFinance ready")
+print("YahooQuery ready")
 
 def get_data(tv_symbol, exchange, interval, n_bars=300):
-    """Pull from Yahoo Finance instead of TradingView/MT5"""
+    """Pull from Yahoo via yahooquery - bypasses Railway block"""
     yf_sym = YF_MAP.get(tv_symbol, tv_symbol)
-    # map intervals
-    tf_map = {'5m':'5m', '15m':'15m', '1h':'60m', '4h':'240m'}
+    # yahooquery intervals: 1m,5m,15m,30m,60m,1h,1d
+    tf_map = {'5m':'5m', '15m':'15m', '1h':'1h', '4h':'1h'}
     yf_interval = tf_map.get(interval, '15m')
 
     try:
-        # yfinance needs different periods for different intervals
-        period = '7d' if yf_interval in ['5m','15m'] else '60d'
-        df = yf.download(yf_sym, period=period, interval=yf_interval, progress=False, auto_adjust=False)
+        t = Ticker(yf_sym)
+        df = t.history(period='60d', interval=yf_interval)
 
         if df is None or df.empty:
-            print(f"YF ERR {yf_sym} empty")
+            print(f"YQ {yf_sym} empty")
             return None
 
-        df = df.rename(columns={'Open':'Open','High':'High','Low':'Low','Close':'Close'})
-        return df[['Open','High','Low','Close']].tail(n_bars).dropna()
+        # yahooquery returns multiindex, flatten it
+        if isinstance(df.index, pd.MultiIndex):
+            df = df.reset_index(level=0, drop=True)
+        df = df.reset_index()
+
+        df = df.rename(columns={'open':'Open','high':'High','low':'Low','close':'Close'})
+        df = df[['Open','High','Low','Close']].dropna().tail(n_bars*2)
+
+        # resample 1h to 4h if needed
+        if interval == '4h':
+            df = df.set_index(pd.to_datetime(df.index) if not isinstance(df.index, pd.DatetimeIndex) else df.index)
+            df = df.resample('4h').agg({'Open':'first','High':'max','Low':'min','Close':'last'}).dropna()
+
+        return df.tail(n_bars)
     except Exception as e:
-        print(f"YF ERR {yf_sym}@{exchange}: {e}")
+        print(f"YQ ERR {yf_sym}: {e}")
         return None
 
-# === STRATEGY FUNCTIONS - DO NOT CHANGE ===
+# === STRATEGY - DO NOT CHANGE ===
 def bias_htf(df):
     if df is None or len(df) < 2: return 0
     return 1 if df['Close'].iloc[-1] > df['High'].iloc[-2] else -1 if df['Close'].iloc[-1] < df['Low'].iloc[-2] else 0
@@ -122,7 +129,6 @@ async def scanner(app):
                 for uid in USERS:
                     try: await app.bot.send_message(uid, msg)
                     except Exception as e: print(f"TG err {e}")
-        # sleep to next M5 bar
         now = datetime.now(timezone.utc)
         secs_to_next = 300 - ((now.minute % 5) * 60 + now.second)
         await asyncio.sleep(max(5, secs_to_next))
@@ -138,7 +144,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(uid):
         await update.message.reply_text(f"⛔ Not authorized\nYour ID: {uid}")
         return
-    await update.message.reply_text("✅ Qumbul YF is ALIVE bro!", reply_markup=main_menu(uid))
+    await update.message.reply_text("✅ Qumbul is ALIVE bro!", reply_markup=main_menu(uid))
 
 async def id_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Your ID: {update.effective_user.id}")
@@ -181,5 +187,6 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("id", id_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     threading.Thread(target=lambda: asyncio.run(scanner(app)), daemon=True).start()
-    print("Bot started with Yahoo Finance data")
-    app.run_polling()
+    print("Bot started with YahooQuery data")
+    # drop_pending_updates=True fixes the Conflict error
+    app.run_polling(drop_pending_updates=True)

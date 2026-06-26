@@ -1,4 +1,4 @@
 python-telegram-bot==21.4
 pandas==2.1.4
-yfinance==0.2.40
+yahooquery==2.3.9
 websocket-client==1.6.4
