@@ -68,10 +68,10 @@ def get_data(tv_symbol, exchange, interval, n_bars=300):
         return None
 
 def get_current_price(tv_symbol):
+    # CRUMB-PROOF VERSION - uses history not price API
     yf_sym = YF_MAP.get(tv_symbol, tv_symbol)
     try:
         t = Ticker(yf_sym)
-        # use 1-day history - bypasses crumb requirement
         df = t.history(period='1d', interval='1m')
         if df is not None and not df.empty:
             if isinstance(df.index, pd.MultiIndex):
