@@ -32,15 +32,15 @@ def save_pairs(): save_json(DATA_FILE, PAIRS)
 
 # === YAHOOQUERY ===
 YF_MAP = {
-    "XAUUSD": "XAUUSD=X",
+    "XAUUSD": "GC=F", # changed from XAUUSD=X - futures always have data
     "EURUSD": "EURUSD=X",
     "GBPUSD": "GBPUSD=X",
     "GBPJPY": "GBPJPY=X",
     "EURJPY": "EURJPY=X",
     "USDJPY": "JPY=X",
-    "NAS100": "^NDX",
-    "US30": "^DJI",
-    "SPX500": "^GSPC",
+    "NAS100": "NQ=F", # changed from ^NDX
+    "US30": "YM=F", # changed from ^DJI
+    "SPX500": "ES=F", # changed from ^GSPC
     "BTCUSD": "BTC-USD",
     "ETHUSD": "ETH-USD",
 }
@@ -68,16 +68,18 @@ def get_data(tv_symbol, exchange, interval, n_bars=300):
         return None
 
 def get_current_price(tv_symbol):
-    # CRUMB-PROOF VERSION - uses history not price API
+    # CRUMB-PROOF + FALLBACK VERSION
     yf_sym = YF_MAP.get(tv_symbol, tv_symbol)
     try:
         t = Ticker(yf_sym)
-        df = t.history(period='1d', interval='1m')
-        if df is not None and not df.empty:
-            if isinstance(df.index, pd.MultiIndex):
-                df = df.reset_index(level=0, drop=True)
-            price = df['close'].iloc[-1]
-            return round(float(price), 5)
+        # try 1m, then 5m, then daily - works weekends too
+        for period, interval in [('1d','1m'), ('5d','5m'), ('5d','1d')]:
+            df = t.history(period=period, interval=interval)
+            if df is not None and not df.empty:
+                if isinstance(df.index, pd.MultiIndex):
+                    df = df.reset_index(level=0, drop=True)
+                price = df['close'].iloc[-1]
+                return round(float(price), 5)
         return None
     except Exception as e:
         print(f"Price ERR {yf_sym}: {e}")
