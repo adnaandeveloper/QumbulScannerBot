@@ -1,4 +1,4 @@
-import os, json, asyncio, threading, pandas as pd
+import os, json, asyncio, threading, pandas as pd, time
 from datetime import datetime, timezone
 from yahooquery import Ticker
 from telegram import Update, ReplyKeyboardMarkup
@@ -32,15 +32,15 @@ def save_pairs(): save_json(DATA_FILE, PAIRS)
 
 # === YAHOOQUERY ===
 YF_MAP = {
-    "XAUUSD": "GC=F", # changed from XAUUSD=X - futures always have data
+    "XAUUSD": "XAUUSD=X", # spot gold - not futures
     "EURUSD": "EURUSD=X",
     "GBPUSD": "GBPUSD=X",
     "GBPJPY": "GBPJPY=X",
     "EURJPY": "EURJPY=X",
     "USDJPY": "JPY=X",
-    "NAS100": "NQ=F", # changed from ^NDX
-    "US30": "YM=F", # changed from ^DJI
-    "SPX500": "ES=F", # changed from ^GSPC
+    "NAS100": "^NDX", # Nasdaq 100
+    "US30": "^DJI", # Dow Jones
+    "SPX500": "^GSPC",
     "BTCUSD": "BTC-USD",
     "ETHUSD": "ETH-USD",
 }
@@ -68,18 +68,21 @@ def get_data(tv_symbol, exchange, interval, n_bars=300):
         return None
 
 def get_current_price(tv_symbol):
-    # CRUMB-PROOF + FALLBACK VERSION
+    # SLOW BUT STABLE - 1.2 sec delay to avoid Yahoo rate limit
     yf_sym = YF_MAP.get(tv_symbol, tv_symbol)
     try:
         t = Ticker(yf_sym)
-        # try 1m, then 5m, then daily - works weekends too
-        for period, interval in [('1d','1m'), ('5d','5m'), ('5d','1d')]:
+        time.sleep(1.2) # <--- this stops the dashes
+        for period, interval in [('5d','5m'), ('1mo','1d'), ('5d','1h')]:
             df = t.history(period=period, interval=interval)
             if df is not None and not df.empty:
                 if isinstance(df.index, pd.MultiIndex):
                     df = df.reset_index(level=0, drop=True)
-                price = df['close'].iloc[-1]
-                return round(float(price), 5)
+                price = float(df['close'].iloc[-1])
+                # sanity check - filter bad data
+                if tv_symbol == "XAUUSD" and price > 3500: continue
+                if tv_symbol == "NAS100" and price < 5000: continue
+                return round(price, 5)
         return None
     except Exception as e:
         print(f"Price ERR {yf_sym}: {e}")
@@ -170,6 +173,7 @@ async def text_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if txt=="➕ Add Pair": user_state[uid]="adding"; await update.message.reply_text("Send: NAME TVSYMBOL EXCHANGE\nExample: XAGUSD XAGUSD OANDA", reply_markup=main_menu(uid)); return
     if txt=="📋 My Pairs": await update.message.reply_text("Pairs:\n"+"\n".join([f"{k} → {v['tv']} ({v['ex']})" for k,v in PAIRS.items()]), reply_markup=main_menu(uid)); return
     if txt=="💰 Prices":
+        await update.message.reply_text("⏳ Fetching... (takes 6 sec)")
         msg = "💰 LIVE PRICES\n\n"
         for name, cfg in PAIRS.items():
             p = get_current_price(cfg["tv"])
