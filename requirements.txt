@@ -1,4 +1,4 @@
 python-telegram-bot==21.4
 pandas==2.1.4
 websocket-client==1.6.4
-git+https://github.com/StreamAlpha/tvdatafeed.git
+https://github.com/StreamAlpha/tvdatafeed/archive/refs/heads/main.zip
