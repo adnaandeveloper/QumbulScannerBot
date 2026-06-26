@@ -1,4 +1,4 @@
-import os, json, asyncio, threading, pandas as pd, time
+import os, json, asyncio, threading, pandas as pd, time, requests
 from datetime import datetime, timezone
 from yahooquery import Ticker
 from telegram import Update, ReplyKeyboardMarkup
@@ -30,21 +30,30 @@ def is_admin(uid): return uid == ADMIN_ID
 def is_allowed(uid): return uid in USERS
 def save_pairs(): save_json(DATA_FILE, PAIRS)
 
-# === YAHOOQUERY ===
+# === YAHOOQUERY for scanner (keep) ===
 YF_MAP = {
-    "XAUUSD": "XAUUSD=X", # spot gold - not futures
+    "XAUUSD": "XAUUSD=X",
     "EURUSD": "EURUSD=X",
     "GBPUSD": "GBPUSD=X",
     "GBPJPY": "GBPJPY=X",
     "EURJPY": "EURJPY=X",
     "USDJPY": "JPY=X",
-    "NAS100": "^NDX", # Nasdaq 100
-    "US30": "^DJI", # Dow Jones
+    "NAS100": "^NDX",
+    "US30": "^DJI",
     "SPX500": "^GSPC",
     "BTCUSD": "BTC-USD",
     "ETHUSD": "ETH-USD",
 }
 print("YahooQuery ready")
+
+# === TWELVEDATA for Prices (fast + no block) ===
+TD_MAP = {
+    "XAUUSD": "XAU/USD",
+    "NAS100": "NDX",
+    "EURUSD": "EUR/USD",
+    "GBPUSD": "GBP/USD",
+    "US30": "DJI",
+}
 
 def get_data(tv_symbol, exchange, interval, n_bars=300):
     yf_sym = YF_MAP.get(tv_symbol, tv_symbol)
@@ -68,25 +77,18 @@ def get_data(tv_symbol, exchange, interval, n_bars=300):
         return None
 
 def get_current_price(tv_symbol):
-    # SLOW BUT STABLE - 1.2 sec delay to avoid Yahoo rate limit
-    yf_sym = YF_MAP.get(tv_symbol, tv_symbol)
+    # TwelveData - instant, works on Railway
+    sym = TD_MAP.get(tv_symbol, tv_symbol)
     try:
-        t = Ticker(yf_sym)
-        time.sleep(1.2) # <--- this stops the dashes
-        for period, interval in [('5d','5m'), ('1mo','1d'), ('5d','1h')]:
-            df = t.history(period=period, interval=interval)
-            if df is not None and not df.empty:
-                if isinstance(df.index, pd.MultiIndex):
-                    df = df.reset_index(level=0, drop=True)
-                price = float(df['close'].iloc[-1])
-                # sanity check - filter bad data
-                if tv_symbol == "XAUUSD" and price > 3500: continue
-                if tv_symbol == "NAS100" and price < 5000: continue
-                return round(price, 5)
-        return None
+        url = f"https://api.twelvedata.com/price?symbol={sym}&apikey=demo"
+        r = requests.get(url, timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            if "price" in data:
+                return round(float(data["price"]), 5)
     except Exception as e:
-        print(f"Price ERR {yf_sym}: {e}")
-        return None
+        print(f"TD ERR {sym}: {e}")
+    return None
 
 # === STRATEGY ===
 def bias_htf(df):
@@ -173,7 +175,6 @@ async def text_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if txt=="➕ Add Pair": user_state[uid]="adding"; await update.message.reply_text("Send: NAME TVSYMBOL EXCHANGE\nExample: XAGUSD XAGUSD OANDA", reply_markup=main_menu(uid)); return
     if txt=="📋 My Pairs": await update.message.reply_text("Pairs:\n"+"\n".join([f"{k} → {v['tv']} ({v['ex']})" for k,v in PAIRS.items()]), reply_markup=main_menu(uid)); return
     if txt=="💰 Prices":
-        await update.message.reply_text("⏳ Fetching... (takes 6 sec)")
         msg = "💰 LIVE PRICES\n\n"
         for name, cfg in PAIRS.items():
             p = get_current_price(cfg["tv"])
@@ -201,5 +202,5 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("id", id_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     threading.Thread(target=lambda: asyncio.run(scanner(app)), daemon=True).start()
-    print("Bot started with YahooQuery data")
+    print("Bot started with TwelveData prices")
     app.run_polling(drop_pending_updates=True)
