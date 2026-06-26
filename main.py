@@ -44,7 +44,6 @@ YF_MAP = {
     "BTCUSD": "BTC-USD",
     "ETHUSD": "ETH-USD",
 }
-print("YahooQuery ready")
 
 def get_data(tv_symbol, exchange, interval, n_bars=300):
     yf_sym = YF_MAP.get(tv_symbol, tv_symbol)
@@ -68,26 +67,39 @@ def get_data(tv_symbol, exchange, interval, n_bars=300):
         return None
 
 def get_current_price(tv_symbol):
-    # ONE SOURCE - Yahoo direct chart API
-    yahoo_map = {
-        "XAUUSD": "XAUUSD=X",
-        "NAS100": "^NDX",
-        "EURUSD": "EURUSD=X",
-        "GBPUSD": "GBPUSD=X",
-        "US30": "^DJI",
+    # FINNHUB DEMO - one source for all
+    finnhub_map = {
+        "XAUUSD": "OANDA:XAU_USD",
+        "EURUSD": "OANDA:EUR_USD",
+        "GBPUSD": "OANDA:GBP_USD",
+        "NAS100": "NASDAQ:NDX",
+        "US30": "DIA",
     }
-    sym = yahoo_map.get(tv_symbol)
-    if not sym:
-        return None
+    sym = finnhub_map.get(tv_symbol)
     try:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?range=1d&interval=1m"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        r = requests.get(url, headers=headers, timeout=5)
-        data = r.json()
-        price = data["chart"]["result"][0]["meta"]["regularMarketPrice"]
-        return round(float(price), 5 if "USD" in tv_symbol and tv_symbol!= "XAUUSD" else 2)
+        url = f"https://finnhub.io/api/v1/quote?symbol={sym}&token=demo"
+        r = requests.get(url, timeout=5)
+        price = r.json().get("c")
+        if price and price > 0:
+            if tv_symbol == "XAUUSD" and 1000 < price < 6000:
+                return round(price, 2)
+            if tv_symbol == "NAS100" and 10000 < price < 30000:
+                return round(price, 2)
+            if tv_symbol == "US30":
+                # DIA ~390, multiply to get Dow points
+                return round(price * 100, 2)
+            if tv_symbol in ["EURUSD", "GBPUSD"]:
+                return round(price, 5)
     except Exception as e:
-        print(f"Yahoo direct ERR {sym}: {e}")
+        print(f"Finnhub ERR {sym}: {e}")
+
+    # fallback for gold
+    if tv_symbol == "XAUUSD":
+        try:
+            r = requests.get("https://api.gold-api.com/price/XAU", timeout=5)
+            return round(r.json().get("price", 0), 2)
+        except:
+            pass
     return None
 
 # === STRATEGY ===
@@ -120,7 +132,6 @@ def check_pair(name, cfg):
     s15, s5 = cisd_state(m15), cisd_state(m5)
     buy_cross = is_crossover(m5, "buy")
     sell_cross = is_crossover(m5, "sell")
-    print(f"{name} | 4H:{b4} 1H:{b1} buyX:{buy_cross} sellX:{sell_cross}")
     sig = None
     if b1 == 1 and b1 == b4 and buy_cross: sig = "FRACTAL BUY"
     if b1 == -1 and b1 == b4 and sell_cross: sig = "FRACTAL SELL"
@@ -135,7 +146,7 @@ async def scanner(app):
             if msg:
                 for uid in USERS:
                     try: await app.bot.send_message(uid, msg)
-                    except Exception as e: print(f"TG err {e}")
+                    except: pass
         now = datetime.now(timezone.utc)
         secs_to_next = 300 - ((now.minute % 5) * 60 + now.second)
         await asyncio.sleep(max(5, secs_to_next))
@@ -149,8 +160,7 @@ def main_menu(uid):
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if not is_allowed(uid):
-        await update.message.reply_text(f"⛔ Not authorized\nYour ID: {uid}")
-        return
+        await update.message.reply_text(f"⛔ Not authorized\nYour ID: {uid}"); return
     await update.message.reply_text("✅ Qumbul is ALIVE bro!", reply_markup=main_menu(uid))
 
 async def id_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -172,25 +182,23 @@ async def text_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if int(txt) in USERS: USERS.remove(int(txt)); save_json(USERS_FILE, USERS)
         user_state[uid]=None; await update.message.reply_text("✅ Removed", reply_markup=main_menu(uid)); return
 
-    if txt=="➕ Add Pair": user_state[uid]="adding"; await update.message.reply_text("Send: NAME TVSYMBOL EXCHANGE\nExample: XAGUSD XAGUSD OANDA", reply_markup=main_menu(uid)); return
-    if txt=="📋 My Pairs": await update.message.reply_text("Pairs:\n"+"\n".join([f"{k} → {v['tv']} ({v['ex']})" for k,v in PAIRS.items()]), reply_markup=main_menu(uid)); return
+    if txt=="➕ Add Pair": user_state[uid]="adding"; await update.message.reply_text("Send: NAME TVSYMBOL EXCHANGE", reply_markup=main_menu(uid)); return
+    if txt=="📋 My Pairs": await update.message.reply_text("Pairs:\n"+"\n".join([f"{k} → {v['tv']}" for k,v in PAIRS.items()]), reply_markup=main_menu(uid)); return
     if txt=="💰 Prices":
         msg = "💰 LIVE PRICES\n\n"
         for name, cfg in PAIRS.items():
             p = get_current_price(cfg["tv"])
             msg += f"{name}: {p if p else '—'}\n"
         msg += f"\n{datetime.now(timezone.utc).strftime('%H:%M UTC')}"
-        await update.message.reply_text(msg, reply_markup=main_menu(uid))
-        return
+        await update.message.reply_text(msg, reply_markup=main_menu(uid)); return
     if txt=="❌ Remove": user_state[uid]="removing"; await update.message.reply_text("Send NAME:", reply_markup=main_menu(uid)); return
     if txt=="⬅ Back": await update.message.reply_text("Back", reply_markup=main_menu(uid)); return
 
     if state=="adding":
         parts = txt.split()
         if len(parts)>=3:
-            name, tv_sym, ex = parts[0].upper(), parts[1].upper(), parts[2].upper()
-            PAIRS[name] = {"tv": tv_sym, "ex": ex}; save_pairs()
-            await update.message.reply_text(f"✅ {name} added", reply_markup=main_menu(uid))
+            PAIRS[parts[0].upper()] = {"tv": parts[1].upper(), "ex": parts[2].upper()}; save_pairs()
+            await update.message.reply_text(f"✅ {parts[0].upper()} added", reply_markup=main_menu(uid))
         user_state[uid]=None
     elif state=="removing":
         PAIRS.pop(txt.upper(), None); save_pairs(); user_state[uid]=None
@@ -202,5 +210,5 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("id", id_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     threading.Thread(target=lambda: asyncio.run(scanner(app)), daemon=True).start()
-    print("Bot started - Yahoo direct prices")
+    print("Bot started - Finnhub prices")
     app.run_polling(drop_pending_updates=True)
