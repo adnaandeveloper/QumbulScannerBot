@@ -45,16 +45,24 @@ def get_data(sym, interval):
 
 def get_current_price(tv):
     try:
-        if tv == "XAUUSD": return round(requests.get("https://api.gold-api.com/price/XAU", timeout=5).json().get("price",0),2)
-        if tv == "EURUSD": return round(1/requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=5).json()["rates"]["EUR"],5)
-        if tv == "GBPUSD": return round(1/requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=5).json()["rates"]["GBP"],5)
+        if tv == "XAUUSD":
+            r = requests.get("https://api.gold-api.com/price/XAU", timeout=5)
+            return round(r.json().get("price", 0), 2)
+        if tv == "EURUSD":
+            r = requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=5)
+            return round(1 / r.json()["rates"]["EUR"], 5)
+        if tv == "GBPUSD":
+            r = requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=5)
+            return round(1 / r.json()["rates"]["GBP"], 5)
         if tv == "NAS100":
-            r = requests.get("https://financialmodelingprep.com/api/v3/quote/%5ENDX?apikey=demo", timeout=5)
-            return round(r.json()[0]["price"],2)
+            r = requests.get("https://api.twelvedata.com/price?symbol=NDX&exchange=NASDAQ&apikey=demo", timeout=5)
+            return round(float(r.json()["price"]), 2)
         if tv == "US30":
-            r = requests.get("https://financialmodelingprep.com/api/v3/quote/%5EDJI?apikey=demo", timeout=5)
-            return round(r.json()[0]["price"],2)
-    except: return None
+            r = requests.get("https://api.twelvedata.com/price?symbol=DJI&exchange=DJI&apikey=demo", timeout=5)
+            return round(float(r.json()["price"]), 2)
+    except Exception as e:
+        print(f"Price err {tv}: {e}")
+    return None
 
 def bias_htf(df):
     if df is None or len(df)<2: return 0
@@ -99,7 +107,7 @@ def menu(uid):
     return ReplyKeyboardMarkup(base, resize_keyboard=True)
 
 async def start(u,c):
-    if not is_allowed(u.effective_user.id): return
+    if not is_allowed(u.effective_user.id): await u.message.reply_text(f"ID: {u.effective_user.id}"); return
     await u.message.reply_text("✅ Fr Bot Ready", reply_markup=menu(u.effective_user.id))
 
 async def text(u,c):
@@ -108,12 +116,18 @@ async def text(u,c):
     t=u.message.text
     if t=="💰 Prices":
         msg="💰 PRICES\n\n"
-        for n,cfg in PAIRS.items(): msg+=f"{n}: {get_current_price(cfg['tv']) or '—'}\n"
+        for n,cfg in PAIRS.items():
+            p=get_current_price(cfg['tv'])
+            msg+=f"{n}: {p if p else '—'}\n"
+        msg+=f"\n{datetime.now(timezone.utc).strftime('%H:%M UTC')}"
         await u.message.reply_text(msg, reply_markup=menu(uid))
+    elif t=="📋 Pairs":
+        await u.message.reply_text("\n".join(PAIRS.keys()), reply_markup=menu(uid))
 
 if __name__=="__main__":
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text))
     threading.Thread(target=lambda: asyncio.run(scanner(app)), daemon=True).start()
-    app.run_polling()
+    print("Bot started")
+    app.run_polling(drop_pending_updates=True)
