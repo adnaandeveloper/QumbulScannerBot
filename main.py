@@ -121,6 +121,29 @@ async def start(u,c):
     if not is_allowed(u.effective_user.id): await u.message.reply_text(f"ID: {u.effective_user.id}"); return
     await u.message.reply_text("✅ Fr Bot Ready", reply_markup=menu(u.effective_user.id))
 
+
+    async def testfr(u,c):
+    if not is_allowed(u.effective_user.id): return
+    msg = f"🚨 XAUUSD\nFr buy (TEST)\n{datetime.now(timezone.utc).strftime('%H:%M UTC')}"
+    await u.message.reply_text(msg)
+
+async def status(u,c):
+    if not is_allowed(u.effective_user.id): return
+    txt = "📊 LIVE STATUS\n\n"
+    for n,cfg in PAIRS.items():
+        h4 = get_data(cfg["tv"], '4h')
+        h1 = get_data(cfg["tv"], '1h')
+        m5 = get_data(cfg["tv"], '5m')
+        b4 = "BUY" if bias_htf(h4)==1 else "SELL" if bias_htf(h4)==-1 else "—"
+        b1 = "BUY" if bias_htf(h1)==1 else "SELL" if bias_htf(h1)==-1 else "—"
+        if m5 is not None and len(m5)>2:
+            last_high = m5['High'].iloc[-6:-1].max()
+            last_low = m5['Low'].iloc[-6:-1].min()
+            txt += f"{n}: 4H {b4} | 1H {b1} | 5m H:{last_high:.2f} L:{last_low:.2f}\n"
+        else:
+            txt += f"{n}: no data\n"
+    await u.message.reply_text(txt)
+
 async def text(u,c):
     uid=u.message.from_user.id
     if not is_allowed(uid): return
@@ -140,5 +163,7 @@ if __name__=="__main__":
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text))
     threading.Thread(target=lambda: asyncio.run(scanner(app)), daemon=True).start()
+    app.add_handler(CommandHandler("testfr", testfr))
+app.add_handler(CommandHandler("status", status))
     print("Bot started")
     app.run_polling(drop_pending_updates=True)
