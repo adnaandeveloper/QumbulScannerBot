@@ -30,7 +30,7 @@ def is_admin(uid): return uid == ADMIN_ID
 def is_allowed(uid): return uid in USERS
 def save_pairs(): save_json(DATA_FILE, PAIRS)
 
-# === YAHOOQUERY SETUP (works on Railway) ===
+# === YAHOOQUERY ===
 YF_MAP = {
     "XAUUSD": "XAUUSD=X",
     "EURUSD": "EURUSD=X",
@@ -47,39 +47,37 @@ YF_MAP = {
 print("YahooQuery ready")
 
 def get_data(tv_symbol, exchange, interval, n_bars=300):
-    """Pull from Yahoo via yahooquery - bypasses Railway block"""
     yf_sym = YF_MAP.get(tv_symbol, tv_symbol)
-    # yahooquery intervals: 1m,5m,15m,30m,60m,1h,1d
     tf_map = {'5m':'5m', '15m':'15m', '1h':'1h', '4h':'1h'}
     yf_interval = tf_map.get(interval, '15m')
-
     try:
         t = Ticker(yf_sym)
         df = t.history(period='60d', interval=yf_interval)
-
-        if df is None or df.empty:
-            print(f"YQ {yf_sym} empty")
-            return None
-
-        # yahooquery returns multiindex, flatten it
+        if df is None or df.empty: return None
         if isinstance(df.index, pd.MultiIndex):
             df = df.reset_index(level=0, drop=True)
         df = df.reset_index()
-
         df = df.rename(columns={'open':'Open','high':'High','low':'Low','close':'Close'})
         df = df[['Open','High','Low','Close']].dropna().tail(n_bars*2)
-
-        # resample 1h to 4h if needed
         if interval == '4h':
             df = df.set_index(pd.to_datetime(df.index) if not isinstance(df.index, pd.DatetimeIndex) else df.index)
             df = df.resample('4h').agg({'Open':'first','High':'max','Low':'min','Close':'last'}).dropna()
-
         return df.tail(n_bars)
     except Exception as e:
         print(f"YQ ERR {yf_sym}: {e}")
         return None
 
-# === STRATEGY - DO NOT CHANGE ===
+def get_current_price(tv_symbol):
+    yf_sym = YF_MAP.get(tv_symbol, tv_symbol)
+    try:
+        t = Ticker(yf_sym)
+        price = t.price[yf_sym].get('regularMarketPrice')
+        return round(price, 5) if price else None
+    except Exception as e:
+        print(f"Price ERR {yf_sym}: {e}")
+        return None
+
+# === STRATEGY ===
 def bias_htf(df):
     if df is None or len(df) < 2: return 0
     return 1 if df['Close'].iloc[-1] > df['High'].iloc[-2] else -1 if df['Close'].iloc[-1] < df['Low'].iloc[-2] else 0
@@ -105,20 +103,16 @@ def check_pair(name, cfg):
     h4 = get_data(tv_sym, ex, '4h', 200)
     m15 = get_data(tv_sym, ex, '15m', 200)
     m5 = get_data(tv_sym, ex, '5m', 200)
-
     b4, b1 = bias_htf(h4), bias_htf(h1)
     s15, s5 = cisd_state(m15), cisd_state(m5)
     buy_cross = is_crossover(m5, "buy")
     sell_cross = is_crossover(m5, "sell")
-
     print(f"{name} | 4H:{b4} 1H:{b1} buyX:{buy_cross} sellX:{sell_cross}")
-
     sig = None
     if b1 == 1 and b1 == b4 and buy_cross: sig = "FRACTAL BUY"
     if b1 == -1 and b1 == b4 and sell_cross: sig = "FRACTAL SELL"
     if not sig or last_signals.get(name) == sig: return None
     last_signals[name] = sig
-
     return f"🚨 {name}\n{sig}\n\n4H: {'BUY ✓' if b4==1 else 'SELL ✓' if b4==-1 else '—'}\n1H: {'BUY ✓' if b1==1 else 'SELL ✓' if b1==-1 else '—'}\n15m: {s15}\n5m: {s5}\n{datetime.now(timezone.utc).strftime('%H:%M UTC')}"
 
 async def scanner(app):
@@ -135,7 +129,7 @@ async def scanner(app):
 
 # === TELEGRAM ===
 def main_menu(uid):
-    base = [["➕ Add Pair", "📋 My Pairs"], ["❌ Remove", "⬅ Back"]]
+    base = [["➕ Add Pair", "📋 My Pairs"], ["💰 Prices", "❌ Remove"], ["⬅ Back"]]
     if is_admin(uid): base.append(["👑 Admin"])
     return ReplyKeyboardMarkup(base, resize_keyboard=True)
 
@@ -167,6 +161,14 @@ async def text_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if txt=="➕ Add Pair": user_state[uid]="adding"; await update.message.reply_text("Send: NAME TVSYMBOL EXCHANGE\nExample: XAGUSD XAGUSD OANDA", reply_markup=main_menu(uid)); return
     if txt=="📋 My Pairs": await update.message.reply_text("Pairs:\n"+"\n".join([f"{k} → {v['tv']} ({v['ex']})" for k,v in PAIRS.items()]), reply_markup=main_menu(uid)); return
+    if txt=="💰 Prices":
+        msg = "💰 LIVE PRICES\n\n"
+        for name, cfg in PAIRS.items():
+            p = get_current_price(cfg["tv"])
+            msg += f"{name}: {p if p else '—'}\n"
+        msg += f"\n{datetime.now(timezone.utc).strftime('%H:%M UTC')}"
+        await update.message.reply_text(msg, reply_markup=main_menu(uid))
+        return
     if txt=="❌ Remove": user_state[uid]="removing"; await update.message.reply_text("Send NAME:", reply_markup=main_menu(uid)); return
     if txt=="⬅ Back": await update.message.reply_text("Back", reply_markup=main_menu(uid)); return
 
@@ -188,5 +190,4 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     threading.Thread(target=lambda: asyncio.run(scanner(app)), daemon=True).start()
     print("Bot started with YahooQuery data")
-    # drop_pending_updates=True fixes the Conflict error
     app.run_polling(drop_pending_updates=True)
